@@ -2,7 +2,7 @@
 
 Evaluate speculator models using vLLM and GuideLLM, and extract acceptance length metrics.
 
-> **Requirements:** vLLM **0.12.1 or greater** is required for running evaluations.
+> **Requirements:** vLLM **0.12.1 or greater** is required for running evaluations. P-EAGLE parallel drafting requires a vLLM build with `parallel_drafting` support; `setup.sh` installs the pinned evaluation requirements.
 
 ## Quick Start
 
@@ -12,7 +12,18 @@ Evaluate speculator models using vLLM and GuideLLM, and extract acceptance lengt
 bash setup.sh  # or: bash setup.sh --use-uv for faster installation
 ```
 
-**2. Run evaluation with a pre-configured model:**
+**2. Download local Qwen3-8B speculators:**
+
+```bash
+./download_qwen3_8b_speculators.sh
+```
+
+This downloads:
+
+- EAGLE3 to `/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-eagle3-speculator`
+- P-EAGLE to `/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-peagle-speculator`
+
+**3. Run evaluation with a pre-configured model:**
 
 ```bash
 # Llama-3.1-8B EAGLE3 on math_reasoning dataset
@@ -26,6 +37,12 @@ bash setup.sh  # or: bash setup.sh --use-uv for faster installation
 
 # Qwen3-8B EAGLE3 on math_reasoning dataset
 ./run_evaluation.sh -c configs/qwen3-8b-eagle3.env
+
+# Qwen3-8B P-EAGLE on math_reasoning dataset
+./run_evaluation.sh -c configs/qwen3-8b-peagle.env
+
+# Compare Qwen3-8B EAGLE3 and P-EAGLE
+./run_qwen3_8b_eagle3_vs_peagle.sh
 
 # Qwen3-32B EAGLE3 on math_reasoning dataset
 ./run_evaluation.sh -c configs/qwen3-32b-eagle3.env
@@ -51,6 +68,7 @@ This framework uses vLLM's speculative decoding feature to evaluate speculator m
 
 - **Base Model**: The main LLM that performs final token acceptance/rejection
 - **Speculator** (EAGLE3): A separate, smaller model that proposes speculative tokens — loaded via `SPECULATOR_MODEL`
+- **P-EAGLE**: An EAGLE3-compatible speculator trained for parallel drafting. In vLLM this is enabled with `METHOD="eagle3"` and `PARALLEL_DRAFTING="true"`
 - **Built-in MTP head**: Some models (e.g. Qwen3-Next) ship the speculative head inside the base checkpoint; no separate speculator is needed
 - **Speculative Decoding**: The base model validates speculative tokens, speeding up inference
 
@@ -59,11 +77,13 @@ The framework consists of modular scripts organized in a clean directory structu
 ```
 eval-guidellm/
 ├── run_evaluation.sh              # Main controller
+├── download_qwen3_8b_speculators.sh  # Download local Qwen3-8B EAGLE3/P-EAGLE checkpoints
 ├── configs/                       # Pre-configured evaluations
 │   ├── llama-3.1-8b-eagle3.env    # Llama-3.1-8B (EAGLE3)
 │   ├── llama-3.3-70b-eagle3.env   # Llama-3.3-70B (EAGLE3)
 │   ├── gpt-oss-20b-eagle3.env     # GPT-OSS-20B (EAGLE3)
 │   ├── qwen3-8b-eagle3.env        # Qwen3-8B (EAGLE3)
+│   ├── qwen3-8b-peagle.env        # Qwen3-8B (P-EAGLE parallel drafting)
 │   ├── qwen3-32b-eagle3.env       # Qwen3-32B (EAGLE3)
 │   └── qwen3-next-80b-mtp.env     # Qwen3-Next-80B (built-in MTP head)
 ├── scripts/                       # Utility scripts
@@ -71,7 +91,8 @@ eval-guidellm/
 │   ├── vllm_stop.sh
 │   ├── run_guidellm.sh
 │   └── parse_logs.py
-└── setup.sh                       # Install dependencies
+├── setup.sh                       # Install dependencies
+└── run_qwen3_8b_eagle3_vs_peagle.sh  # Qwen3-8B EAGLE3 vs P-EAGLE comparison
 ```
 
 ## Configuration
@@ -86,6 +107,7 @@ The framework includes configs for common models:
 ./run_evaluation.sh -c configs/llama-3.3-70b-eagle3.env
 ./run_evaluation.sh -c configs/gpt-oss-20b-eagle3.env
 ./run_evaluation.sh -c configs/qwen3-8b-eagle3.env
+./run_evaluation.sh -c configs/qwen3-8b-peagle.env
 ./run_evaluation.sh -c configs/qwen3-32b-eagle3.env
 
 # MTP (built-in head — no separate speculator)
@@ -103,8 +125,11 @@ Required:
   -d DATASET            Dataset for benchmarking (see Dataset Options below)
 
 Optional:
-  -c FILE       Config file to use (e.g., configs/llama-eagle3.env)
-  -o DIR        Output directory (default: eval_results_TIMESTAMP)
+  -c FILE               Config file to use (e.g., configs/llama-eagle3.env)
+  -o DIR                Output directory (default: eval_results_TIMESTAMP)
+  --num-spec-tokens N   Number of speculative tokens
+  --port PORT           vLLM server port
+  --parallel-drafting   Enable P-EAGLE parallel drafting
 ```
 
 ### Creating Custom Configs
@@ -118,6 +143,7 @@ BASE_MODEL="my-org/my-base-model"
 SPECULATOR_MODEL="my-org/my-speculator-model"
 NUM_SPEC_TOKENS=3
 METHOD="eagle3"
+PARALLEL_DRAFTING="false"
 
 # Dataset configuration
 DATASET="RedHatAI/speculator_benchmarks:math_reasoning.jsonl"
@@ -151,6 +177,7 @@ Then run:
 | `SPECULATOR_MODEL`       | Speculator model path or HuggingFace ID (omit for MTP)        | (optional)               |
 | `NUM_SPEC_TOKENS`        | Number of speculative tokens to generate                      | 3                        |
 | `METHOD`                 | Speculative decoding method (`eagle3` or `mtp`)               | eagle3                   |
+| `PARALLEL_DRAFTING`      | Set to `true` for P-EAGLE parallel drafting                   | false                    |
 | `DATASET`                | Dataset for benchmarking (emulated, HF dataset, or file path) | (required)               |
 | `TENSOR_PARALLEL_SIZE`   | Number of GPUs for tensor parallelism                         | 2                        |
 | `GPU_MEMORY_UTILIZATION` | GPU memory fraction to use                                    | 0.8                      |
@@ -193,6 +220,26 @@ The framework supports five types of dataset inputs:
 
    - Runs benchmark on that specific file
    - Example: `DATASET="./my_data.jsonl"`
+
+## P-EAGLE Parallel Drafting
+
+P-EAGLE uses an EAGLE3-compatible speculator checkpoint, but the draft tokens are produced in parallel. In vLLM, enable it by keeping `METHOD="eagle3"` and adding `PARALLEL_DRAFTING="true"`, which passes `"parallel_drafting": true` into `--speculative-config`.
+
+The repository does not ship a Qwen3-8B P-EAGLE checkpoint. Provide one as a local path or HuggingFace ID:
+
+```bash
+./download_qwen3_8b_speculators.sh
+./run_evaluation.sh -c configs/qwen3-8b-peagle.env
+```
+
+To compare against the published Qwen3-8B EAGLE3 baseline with the same dataset and settings:
+
+```bash
+./run_qwen3_8b_eagle3_vs_peagle.sh \
+  --num-spec-tokens 3
+```
+
+The comparison script writes `eagle3/` and `peagle/` subdirectories under one timestamped output root.
 
 ## MTP (Built-in Head) Models
 
@@ -289,7 +336,15 @@ These metrics help evaluate the effectiveness of speculative decoding.
 ./run_evaluation.sh -c configs/llama-3.3-70b-eagle3.env
 ./run_evaluation.sh -c configs/gpt-oss-20b-eagle3.env
 ./run_evaluation.sh -c configs/qwen3-8b-eagle3.env
+./run_evaluation.sh -c configs/qwen3-8b-peagle.env
 ./run_evaluation.sh -c configs/qwen3-32b-eagle3.env
+```
+
+### Qwen3-8B EAGLE3 vs P-EAGLE
+
+```bash
+./run_qwen3_8b_eagle3_vs_peagle.sh \
+  --num-spec-tokens 3
 ```
 
 ### Quick Test with Emulated Dataset

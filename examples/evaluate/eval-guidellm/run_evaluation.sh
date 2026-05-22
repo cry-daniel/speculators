@@ -9,12 +9,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE=""
+RESULTS_DIR="${RESULTS_DIR:-${SCRIPT_DIR}/results}"
+LOCAL_NO_PROXY="localhost,127.0.0.1"
+export NO_PROXY="${NO_PROXY:+${NO_PROXY},}${LOCAL_NO_PROXY}"
+export no_proxy="${no_proxy:+${no_proxy},}${LOCAL_NO_PROXY}"
 
 # Variables (precedence: CLI args > config file > defaults)
 BASE_MODEL=""
 SPECULATOR_MODEL=""
 NUM_SPEC_TOKENS=""
 METHOD=""
+PARALLEL_DRAFTING=""
 DATASET=""
 TENSOR_PARALLEL_SIZE=""
 MAX_MODEL_LEN=""
@@ -43,11 +48,16 @@ Required (use one):
 
 Optional:
   -s SPECULATOR_MODEL  Speculator model (omit for built-in MTP heads)
-  -o OUTPUT_DIR        Output directory (default: eval_results_TIMESTAMP)
+  -o OUTPUT_DIR        Output directory (default: RESULTS_DIR/eval_results_TIMESTAMP)
+  --results-dir DIR    Default output root (default: ${SCRIPT_DIR}/results)
+  --num-spec-tokens N  Number of speculative tokens (default: 3)
+  --port PORT          vLLM server port (default: 8000)
+  --parallel-drafting  Enable vLLM parallel drafting for P-EAGLE
   -h, --help           Show this help message
 
 Examples:
   $0 -c configs/llama-3.3-70b-eagle3.env              # EAGLE3 via config file
+  $0 -c configs/qwen3-8b-peagle.env                    # P-EAGLE via config file
   $0 -c configs/qwen3-next-80b-mtp.env                 # MTP via config file
   $0 -b "RedHatAI/Llama-3.3-70B-Instruct-FP8-dynamic" \\
      -s "RedHatAI/Llama-3.3-70B-Instruct-speculator.eagle3" \\
@@ -109,6 +119,22 @@ while [[ $# -gt 0 ]]; do
             OUTPUT_DIR="$2"
             shift 2
             ;;
+        --results-dir)
+            RESULTS_DIR="$2"
+            shift 2
+            ;;
+        --num-spec-tokens)
+            NUM_SPEC_TOKENS="$2"
+            shift 2
+            ;;
+        --port)
+            PORT="$2"
+            shift 2
+            ;;
+        --parallel-drafting)
+            PARALLEL_DRAFTING="true"
+            shift
+            ;;
         -h|--help)
             show_usage
             exit 0
@@ -155,12 +181,13 @@ fi
 # Apply defaults for any variables not set by CLI args or config file
 NUM_SPEC_TOKENS="${NUM_SPEC_TOKENS:-3}"
 METHOD="${METHOD:-eagle3}"
+PARALLEL_DRAFTING="${PARALLEL_DRAFTING:-false}"
 TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-24000}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-0.85}"
 PORT="${PORT:-8000}"
 HEALTH_CHECK_TIMEOUT="${HEALTH_CHECK_TIMEOUT:-300}"
-OUTPUT_DIR="${OUTPUT_DIR:-eval_results_$(date +%Y%m%d_%H%M%S)}"
+OUTPUT_DIR="${OUTPUT_DIR:-${RESULTS_DIR}/eval_results_$(date +%Y%m%d_%H%M%S)}"
 TEMPERATURE="${TEMPERATURE:-0.6}"
 TOP_P="${TOP_P:-0.95}"
 TOP_K="${TOP_K:-20}"
@@ -188,6 +215,11 @@ fi
 # eagle3 requires an external speculator; mtp uses the built-in head
 if [[ "${METHOD}" == "eagle3" && -z "${SPECULATOR_MODEL}" ]]; then
     echo "[ERROR] METHOD=eagle3 requires SPECULATOR_MODEL to be set (use -s or set it in the config file)" >&2
+    exit 1
+fi
+
+if [[ "${PARALLEL_DRAFTING}" == "true" && -z "${SPECULATOR_MODEL}" ]]; then
+    echo "[ERROR] PARALLEL_DRAFTING=true requires SPECULATOR_MODEL to be set" >&2
     exit 1
 fi
 
@@ -233,6 +265,7 @@ SERVE_ARGS=(
 [[ -n "${SPECULATOR_MODEL}" ]] && SERVE_ARGS+=(-s "${SPECULATOR_MODEL}")
 [[ -n "${TOKENIZER_MODE}" ]] && SERVE_ARGS+=(--tokenizer-mode "${TOKENIZER_MODE}")
 [[ "${NO_CHUNKED_PREFILL}" == "true" ]] && SERVE_ARGS+=(--no-enable-chunked-prefill)
+[[ "${PARALLEL_DRAFTING}" == "true" ]] && SERVE_ARGS+=(--parallel-drafting)
 
 "${SCRIPT_DIR}/scripts/vllm_serve.sh" "${SERVE_ARGS[@]}"
 
@@ -244,7 +277,7 @@ echo "[INFO] Running benchmark..."
 
 "${SCRIPT_DIR}/scripts/run_guidellm.sh" \
     -d "${DATASET}" \
-    --target "http://localhost:${PORT}/v1" \
+    --target "http://localhost:${PORT}" \
     --output-file "${GUIDELLM_RESULTS}" \
     --log-file "${GUIDELLM_LOG}" \
     --temperature "${TEMPERATURE}" \

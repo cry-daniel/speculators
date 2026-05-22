@@ -3,6 +3,10 @@
 
 set -euo pipefail
 
+LOCAL_NO_PROXY="localhost,127.0.0.1"
+export NO_PROXY="${NO_PROXY:+${NO_PROXY},}${LOCAL_NO_PROXY}"
+export no_proxy="${no_proxy:+${no_proxy},}${LOCAL_NO_PROXY}"
+
 # ==============================================================================
 # Configuration Variables
 # ==============================================================================
@@ -14,6 +18,8 @@ GUIDELLM_LOG=""
 TEMPERATURE=""
 TOP_P=""
 TOP_K=""
+GUIDELLM_RATE="${GUIDELLM_RATE:-}"
+REQUEST_TYPE="${REQUEST_TYPE:-}"
 
 # ==============================================================================
 # Helper Functions
@@ -32,12 +38,14 @@ Required:
                     - Local directory (runs benchmark on all .jsonl files)
 
 Optional:
-  --target URL              Target server URL (default: http://localhost:8000/v1)
+  --target URL              Target server URL (default: http://localhost:8000)
   --output-file FILE        Results JSON file (default: guidellm_results.json)
   --log-file FILE          Output log file (default: guidellm_output.log)
   --temperature TEMP        Sampling temperature (default: 0.6)
   --top-p TOP_P            Top-p sampling (default: 0.95)
   --top-k TOP_K            Top-k sampling (default: 20)
+  --rate RATE              Throughput max concurrency (default: 64)
+  --request-type TYPE      GuideLLM request type (default: chat_completions)
   -h, --help               Show this help message
 
 Examples:
@@ -83,6 +91,14 @@ while [[ $# -gt 0 ]]; do
             TOP_K="$2"
             shift 2
             ;;
+        --rate)
+            GUIDELLM_RATE="$2"
+            shift 2
+            ;;
+        --request-type)
+            REQUEST_TYPE="$2"
+            shift 2
+            ;;
         -h|--help)
             show_usage
             exit 0
@@ -100,12 +116,14 @@ done
 # ==============================================================================
 
 # Apply defaults for any arguments not provided
-TARGET="${TARGET:-http://localhost:8000/v1}"
+TARGET="${TARGET:-http://localhost:8000}"
 GUIDELLM_RESULTS="${GUIDELLM_RESULTS:-guidellm_results.json}"
 GUIDELLM_LOG="${GUIDELLM_LOG:-guidellm_output.log}"
 TEMPERATURE="${TEMPERATURE:-0.6}"
 TOP_P="${TOP_P:-0.95}"
 TOP_K="${TOP_K:-20}"
+GUIDELLM_RATE="${GUIDELLM_RATE:-64}"
+REQUEST_TYPE="${REQUEST_TYPE:-chat_completions}"
 
 # ==============================================================================
 # Validate Arguments
@@ -141,6 +159,7 @@ if [[ "${DATASET}" == */* ]] && [[ ! -e "${DATASET}" ]]; then
 
     # Download the dataset using hf download and capture the download path
     dataset_dir=$(hf download "${DATASET}" --repo-type dataset 2>&1 | tail -1)
+    dataset_dir="${dataset_dir#path=}"
 
     if [[ $? -ne 0 ]] || [[ -z "${dataset_dir}" ]]; then
         echo "[ERROR] Failed to download dataset: ${DATASET}" >&2
@@ -219,14 +238,17 @@ for dataset_file in "${DATASET_FILES[@]}"; do
     echo "[INFO] Running guidellm benchmark..."
     echo "[INFO]   Target: ${TARGET}"
     echo "[INFO]   Dataset: ${dataset_file}"
+    echo "[INFO]   Request type: ${REQUEST_TYPE}"
+    echo "[INFO]   Throughput max concurrency: ${GUIDELLM_RATE}"
     echo "[INFO]   Sampling params - temperature: ${TEMPERATURE}, top_p: ${TOP_P}, top_k: ${TOP_K}"
     echo "[INFO]   Output: ${output_file}"
 
-    GUIDELLM__PREFERRED_ROUTE="chat_completions" \
-    guidellm benchmark \
+    guidellm benchmark run \
       --target "${TARGET}" \
+      --request-type "${REQUEST_TYPE}" \
       --data "${dataset_file}" \
       --profile throughput \
+      --rate "${GUIDELLM_RATE}" \
       --output-path "${output_file}" \
       --backend-args "{\"extras\": {\"body\": {\"temperature\":${TEMPERATURE}, \"top_p\":${TOP_P}, \"top_k\":${TOP_K}}}}" \
       | tee "${log_file}"
