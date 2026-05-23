@@ -1,0 +1,8 @@
+Offline quality per block
+dense_all_blocks: 0.2831975150020762
+independent_topk: 0.3291669363073003
+shared_only: 0.4127521231422505
+shared_fixed_residual: 0.34467680096118697
+pams: 0.40083133868961895
+pams_fallback: 0.40083133868961895
+oracle_shared_residual: 0.36086877525606303

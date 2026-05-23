@@ -1,0 +1,23 @@
+name: pams-verify
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - "vllm[bench]"
+      - torch
+      - transformers
+      - accelerate
+      - datasets
+      - pandas
+      - numpy
+      - scipy
+      - scikit-learn
+      - matplotlib
+      - tqdm
+      - pyyaml
+      - psutil
+      - pynvml
+      - triton
+

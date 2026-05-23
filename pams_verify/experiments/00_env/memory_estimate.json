@@ -1,0 +1,38 @@
+{
+  "available_kv_gb": 7.97,
+  "dtype": "bfloat16",
+  "gpu_memory_utilization": 0.85,
+  "gpu_name": "NVIDIA GeForce RTX 5090",
+  "kv_bytes_per_token": 147456,
+  "kv_mib_per_1024_tokens": 144.0,
+  "max_kv_tokens_under_budget": 58032,
+  "model": "Qwen/Qwen3-8B",
+  "model_config_used": {
+    "head_dim": 128,
+    "num_hidden_layers": 36,
+    "num_key_value_heads": 8,
+    "parameter_count": 8200000000
+  },
+  "model_weight_memory_gb": 15.274,
+  "notes": [
+    "16384 should still be gated by memory estimator headroom on RTX 5090.",
+    "Start smoke tests at max_model_len=4096 and gpu_memory_utilization=0.85.",
+    "Try 8192 only after smoke passes.",
+    "Do not run 16384 by default because estimated headroom is below 20%.",
+    "Never run 32768 context by default on RTX 5090."
+  ],
+  "oom_degrade_order": [
+    "max_num_seqs",
+    "max_model_len",
+    "num_prompts",
+    "dtype_or_kv_cache_dtype"
+  ],
+  "recommended_max_model_len": 4096,
+  "recommended_max_num_seqs": 14,
+  "requested_headroom_ratio": -0.115,
+  "requested_kv_tokens": 65536,
+  "runtime_overhead_gb": 3.821,
+  "safe_16384_with_20pct_headroom": false,
+  "safe_8192": false,
+  "total_vram_gb": 31.84
+}

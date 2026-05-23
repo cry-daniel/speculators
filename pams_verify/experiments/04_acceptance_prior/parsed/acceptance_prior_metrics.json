@@ -1,0 +1,26 @@
+{
+  "calibration": {
+    "auroc_accept": 0.765730444418969,
+    "bias": -0.7,
+    "brier": 0.18774577567774217,
+    "ece": 0.01238643186643796,
+    "temperature": 0.9758064516129032
+  },
+  "test": {
+    "auroc_accept": 0.7627384104936682,
+    "auroc_accept_from_prior": 0.7627384104936682,
+    "auroc_useful_from_rho": 0.7886071297317163,
+    "bias": -0.7,
+    "brier": 0.18373704772496013,
+    "ece": 0.03760528256484607,
+    "rho_useful_correlation": 0.49459094174966056,
+    "temperature": 0.9758064516129032
+  },
+  "validation": {
+    "auroc_accept": 0.7595409292035398,
+    "bias": -0.7,
+    "brier": 0.18717168068955806,
+    "ece": 0.01625983999807396,
+    "temperature": 0.9758064516129032
+  }
+}

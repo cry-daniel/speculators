@@ -1,0 +1,44 @@
+{
+  "compiled": false,
+  "cuda_version": "13.0",
+  "exact_mode": true,
+  "git_commit_hash": "28d850983b58af3001835d66d5d020c54abec9ed",
+  "gpu_name": "unknown",
+  "gpu_vram": "unknown",
+  "high_risk_tokens": 1830,
+  "hostname": "acalab-5090",
+  "integration": "A_scheduler_hook",
+  "low_reach_suffix_tokens": 1533,
+  "max_model_len": null,
+  "model_dtype": "bfloat16",
+  "model_name": "Qwen/Qwen3-8B",
+  "outcome": "offline_policy_registered_no_live_vllm_hook",
+  "patched_vllm": false,
+  "pytorch_version": "2.11.0+cu130",
+  "ran_live_vllm": false,
+  "run_status": "attempted_no_live_patch",
+  "seed": 0,
+  "timestamp": "2026-05-23T03:26:47+00:00",
+  "trace_rows": 7536,
+  "vllm_inspection": {
+    "arbitrary_block_mask_supported": false,
+    "attention_modules_checked": [
+      "/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm/v1/attention/__init__.py",
+      "/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm/v1/attention/backends/flex_attention.py",
+      "/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm/v1/attention/ops/triton_unified_attention.py",
+      "/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm/model_executor/layers/attention/__init__.py",
+      "/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm/transformers_utils/configs/speculators/__init__.py",
+      "/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm/v1/spec_decode/__init__.py"
+    ],
+    "has_pams_verify_config_arg": false,
+    "notes": [
+      "vllm.v1.attention.backends.flex_attention contains mask-like identifiers; these are backend/local masks, not a PAMS verifier-mask API.",
+      "No installed vLLM feature flag for PAMS was found. Arbitrary verifier block masks are treated as unsupported until a local vLLM source patch is applied."
+    ],
+    "package_path": "/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm",
+    "version": "0.20.0",
+    "vllm_imported": true
+  },
+  "vllm_launch_args": [],
+  "vllm_version": "0.20.0"
+}

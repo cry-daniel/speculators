@@ -1,0 +1,12 @@
+diff --git a/vllm/entrypoints/openai/cli_args.py b/vllm/entrypoints/openai/cli_args.py
+--- a/vllm/entrypoints/openai/cli_args.py
++++ b/vllm/entrypoints/openai/cli_args.py
+@@
++    parser.add_argument("--pams-verify-config", default=None)
++
+diff --git a/vllm/attention/backends/abstract.py b/vllm/attention/backends/abstract.py
+--- a/vllm/attention/backends/abstract.py
++++ b/vllm/attention/backends/abstract.py
+@@
++    # Prototype only: carry an optional verifier block mask for decode verification.
++    pams_block_mask: Optional[Any] = None

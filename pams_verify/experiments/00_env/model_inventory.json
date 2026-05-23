@@ -1,0 +1,19 @@
+{
+  "base_model": "Qwen/Qwen3-8B",
+  "base_model_localized": false,
+  "download_attempted": false,
+  "eagle3_speculator": "/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-eagle3-speculator",
+  "models": {
+    "eagle3_speculator": {
+      "config_exists": true,
+      "exists": true,
+      "path": "/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-eagle3-speculator"
+    },
+    "peagle_speculator": {
+      "config_exists": true,
+      "exists": true,
+      "path": "/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-peagle-speculator"
+    }
+  },
+  "peagle_speculator": "/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-peagle-speculator"
+}

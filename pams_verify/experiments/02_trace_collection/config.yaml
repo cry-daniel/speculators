@@ -1,0 +1,17 @@
+target_model: Qwen/Qwen3-8B
+draft_model: Qwen/Qwen3-0.6B
+workloads:
+- short_chat
+- medium_sharegpt_like
+- long_rag_4k
+max_model_len: 8192
+splits:
+- calibration
+- validation
+- test
+seed: 0
+block_sizes:
+- 16
+- 32
+- 64
+draft_len: 4

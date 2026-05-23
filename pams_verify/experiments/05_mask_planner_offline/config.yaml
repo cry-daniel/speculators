@@ -1,0 +1,9 @@
+methods:
+- dense_all_blocks
+- independent_topk
+- shared_only
+- shared_fixed_residual
+- pams
+- pams_fallback
+- oracle_shared_residual
+hyperparameter_selection: fixed_smoke_values_validation_ready

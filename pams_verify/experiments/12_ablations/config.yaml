@@ -1,0 +1,10 @@
+label: offline_simulation
+variants:
+- no_acceptance_prior
+- no_reach_probability
+- no_risk_term
+- shared_only
+- independent_topk
+- fixed_residual
+- no_fallback
+- dense_fallback_all_early

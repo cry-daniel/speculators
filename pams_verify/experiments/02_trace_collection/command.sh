@@ -1,0 +1,1 @@
+python scripts/run_trace_collection.py --target-model Qwen/Qwen3-8B --draft-model Qwen/Qwen3-0.6B --workloads short_chat medium_sharegpt_like long_rag_4k --max-model-len 8192 --splits calibration validation test

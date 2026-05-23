@@ -1,0 +1,18 @@
+{
+  "approximate_fallback": {
+    "decision_match_rate": 0.8097133757961783,
+    "dense_fallback_rate": 0.2898089171974522,
+    "false_accept_rate": 0.10509554140127389,
+    "false_reject_rate": 0.08519108280254777
+  },
+  "exact_fallback": {
+    "decision_match_rate": 1.0,
+    "dense_fallback_rate": 1.0,
+    "false_accept_rate": 0.0,
+    "false_reject_rate": 0.0
+  },
+  "integration": "C_sparse_prefilter_dense_fallback",
+  "outcome": "offline_prefilter_simulation_no_live_vllm",
+  "patched_vllm": false,
+  "ran_live_vllm": false
+}

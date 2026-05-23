@@ -1,0 +1,16 @@
+target_model: Qwen/Qwen3-8B
+methods:
+- dense_no_spec
+port: 8030
+dtype: bfloat16
+gpu_memory_utilization: 0.85
+max_model_len: 2048
+max_num_seqs: 4
+input_len: 64
+output_len: 16
+num_prompts: 4
+num_warmups: 1
+concurrency: 1
+server_timeout: 900
+bench_timeout: 300
+refresh_only: true

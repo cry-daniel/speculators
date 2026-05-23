@@ -1,0 +1,20 @@
+{
+  "cuda_available": true,
+  "cuda_version": "13.1",
+  "driver_version": "590.48.01",
+  "gpu_count": 1,
+  "gpu_name": "NVIDIA GeForce RTX 5090",
+  "notes": [
+    "16384 should still be gated by memory estimator headroom on RTX 5090."
+  ],
+  "recommended_dtype": "bfloat16",
+  "safe_max_model_len_candidates": [
+    2048,
+    4096,
+    8192,
+    16384
+  ],
+  "torch_version": "2.11.0+cu130",
+  "total_vram_gb": 31.84,
+  "vllm_version": "0.20.0"
+}

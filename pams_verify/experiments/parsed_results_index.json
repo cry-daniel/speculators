@@ -1,0 +1,96 @@
+{
+  "experiments": [
+    {
+      "experiment": "00_env",
+      "metadata": "experiments/00_env/metadata.json",
+      "status": "completed"
+    },
+    {
+      "experiment": "01_dense_baselines",
+      "metadata": "experiments/01_dense_baselines/metadata.json",
+      "status": "completed_live_smoke_partial"
+    },
+    {
+      "experiment": "02_trace_collection",
+      "metadata": "experiments/02_trace_collection/metadata.json",
+      "status": "completed_synthetic_fallback"
+    },
+    {
+      "experiment": "03_union_problem",
+      "metadata": "experiments/03_union_problem/metadata.json",
+      "status": "completed_offline_simulation"
+    },
+    {
+      "experiment": "04_acceptance_prior",
+      "metadata": "experiments/04_acceptance_prior/metadata.json",
+      "status": "completed_offline_simulation"
+    },
+    {
+      "experiment": "05_mask_planner_offline",
+      "metadata": "experiments/05_mask_planner_offline/metadata.json",
+      "status": "completed_offline_simulation"
+    },
+    {
+      "experiment": "06_sparse_kernel_microbench",
+      "metadata": "experiments/06_sparse_kernel_microbench/metadata.json",
+      "status": "completed_cpu_reference_scaled_down"
+    },
+    {
+      "experiment": "07_vllm_integration_a_scheduler_hook",
+      "metadata": "experiments/07_vllm_integration_a_scheduler_hook/metadata.json",
+      "status": "attempted_no_live_patch"
+    },
+    {
+      "experiment": "08_vllm_integration_b_attention_patch",
+      "metadata": "experiments/08_vllm_integration_b_attention_patch/metadata.json",
+      "status": "attempted_unsupported_backend"
+    },
+    {
+      "experiment": "09_vllm_integration_c_fallback_prefilter",
+      "metadata": "experiments/09_vllm_integration_c_fallback_prefilter/metadata.json",
+      "status": "attempted_offline_prefilter_only"
+    },
+    {
+      "experiment": "10_end2end",
+      "metadata": "experiments/10_end2end/metadata.json",
+      "status": "blocked_no_patched_vllm_sparse_verifier"
+    },
+    {
+      "experiment": "11_correctness_quality",
+      "metadata": "experiments/11_correctness_quality/metadata.json",
+      "status": "completed_offline_synthetic_audit"
+    },
+    {
+      "experiment": "12_ablations",
+      "metadata": "experiments/12_ablations/metadata.json",
+      "status": "completed_offline_simulation"
+    },
+    {
+      "experiment": "13_failures_oom",
+      "metadata": "experiments/13_failures_oom/metadata.json",
+      "status": "completed_no_oom_observed"
+    }
+  ],
+  "failures": [
+    {
+      "experiment": "07_vllm_integration_a_scheduler_hook",
+      "metadata": "experiments/07_vllm_integration_a_scheduler_hook/metadata.json",
+      "status": "attempted_no_live_patch"
+    },
+    {
+      "experiment": "08_vllm_integration_b_attention_patch",
+      "metadata": "experiments/08_vllm_integration_b_attention_patch/metadata.json",
+      "status": "attempted_unsupported_backend"
+    },
+    {
+      "experiment": "09_vllm_integration_c_fallback_prefilter",
+      "metadata": "experiments/09_vllm_integration_c_fallback_prefilter/metadata.json",
+      "status": "attempted_offline_prefilter_only"
+    },
+    {
+      "experiment": "10_end2end",
+      "metadata": "experiments/10_end2end/metadata.json",
+      "status": "blocked_no_patched_vllm_sparse_verifier"
+    }
+  ]
+}

@@ -1,0 +1,114 @@
+{
+  "approximate_sparse": {
+    "decision_match_rate": 0.7229299363057324,
+    "dense_fallback_rate": 0.0,
+    "false_accept_rate": 0.14132165605095542,
+    "false_reject_rate": 0.1357484076433121
+  },
+  "cuda_version": "13.0",
+  "exact_fallback": {
+    "decision_match_rate": 1.0,
+    "dense_fallback_rate": 1.0,
+    "false_accept_rate": 0.0,
+    "false_reject_rate": 0.0
+  },
+  "false_accept_examples": [
+    {
+      "acceptance_prior": 0.7756282464891082,
+      "block_id": "short_chat_0116:0:bs16",
+      "dense_accept": false,
+      "prompt_id": "short_chat_0116",
+      "sparse_accept": true,
+      "token_index": 2
+    },
+    {
+      "acceptance_prior": 0.8354232187693759,
+      "block_id": "short_chat_0116:0:bs16",
+      "dense_accept": false,
+      "prompt_id": "short_chat_0116",
+      "sparse_accept": true,
+      "token_index": 3
+    },
+    {
+      "acceptance_prior": 0.7756282464891082,
+      "block_id": "short_chat_0116:0:bs32",
+      "dense_accept": false,
+      "prompt_id": "short_chat_0116",
+      "sparse_accept": true,
+      "token_index": 2
+    },
+    {
+      "acceptance_prior": 0.8354232187693759,
+      "block_id": "short_chat_0116:0:bs32",
+      "dense_accept": false,
+      "prompt_id": "short_chat_0116",
+      "sparse_accept": true,
+      "token_index": 3
+    },
+    {
+      "acceptance_prior": 0.7756282464891082,
+      "block_id": "short_chat_0116:0:bs64",
+      "dense_accept": false,
+      "prompt_id": "short_chat_0116",
+      "sparse_accept": true,
+      "token_index": 2
+    },
+    {
+      "acceptance_prior": 0.8354232187693759,
+      "block_id": "short_chat_0116:0:bs64",
+      "dense_accept": false,
+      "prompt_id": "short_chat_0116",
+      "sparse_accept": true,
+      "token_index": 3
+    },
+    {
+      "acceptance_prior": 0.45677358708607285,
+      "block_id": "short_chat_0071:2:bs16",
+      "dense_accept": true,
+      "prompt_id": "short_chat_0071",
+      "sparse_accept": false,
+      "token_index": 3
+    },
+    {
+      "acceptance_prior": 0.45677358708607285,
+      "block_id": "short_chat_0071:2:bs32",
+      "dense_accept": true,
+      "prompt_id": "short_chat_0071",
+      "sparse_accept": false,
+      "token_index": 3
+    },
+    {
+      "acceptance_prior": 0.45677358708607285,
+      "block_id": "short_chat_0071:2:bs64",
+      "dense_accept": true,
+      "prompt_id": "short_chat_0071",
+      "sparse_accept": false,
+      "token_index": 3
+    },
+    {
+      "acceptance_prior": 0.9299672815381334,
+      "block_id": "short_chat_0060:0:bs16",
+      "dense_accept": false,
+      "prompt_id": "short_chat_0060",
+      "sparse_accept": true,
+      "token_index": 0
+    }
+  ],
+  "git_commit_hash": "28d850983b58af3001835d66d5d020c54abec9ed",
+  "gpu_name": "unknown",
+  "gpu_vram": "unknown",
+  "greedy_token_id_exact_match_approximate": false,
+  "greedy_token_id_exact_match_exact_fallback": true,
+  "hostname": "acalab-5090",
+  "max_model_len": null,
+  "mode": "offline_synthetic",
+  "model_dtype": "bfloat16",
+  "model_name": "Qwen/Qwen3-8B",
+  "pytorch_version": "2.11.0+cu130",
+  "quality_metrics_available": false,
+  "run_status": "completed_offline_synthetic_audit",
+  "seed": 0,
+  "timestamp": "2026-05-23T03:23:21+00:00",
+  "vllm_launch_args": [],
+  "vllm_version": "0.20.0"
+}

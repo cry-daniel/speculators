@@ -1,0 +1,68 @@
+{
+  "results": [
+    {
+      "ablation": "no_acceptance_prior",
+      "avg_loaded_blocks": 7.340233545647559,
+      "decision_match_rate": 0.7773354564755839,
+      "dense_fallback_rate": 0.2898089171974522,
+      "false_accept_rate": 0.1588375796178344,
+      "false_reject_rate": 0.06382696390658174
+    },
+    {
+      "ablation": "no_reach_probability",
+      "avg_loaded_blocks": 7.326433121019108,
+      "decision_match_rate": 0.7746815286624203,
+      "dense_fallback_rate": 0.2898089171974522,
+      "false_accept_rate": 0.16175690021231423,
+      "false_reject_rate": 0.06356157112526539
+    },
+    {
+      "ablation": "no_risk_term",
+      "avg_loaded_blocks": 7.142781316348195,
+      "decision_match_rate": 0.7818471337579618,
+      "dense_fallback_rate": 0.2898089171974522,
+      "false_accept_rate": 0.1583067940552017,
+      "false_reject_rate": 0.05984607218683652
+    },
+    {
+      "ablation": "shared_only",
+      "avg_loaded_blocks": 7.13375796178344,
+      "decision_match_rate": 0.6342887473460722,
+      "dense_fallback_rate": 0.0,
+      "false_accept_rate": 0.26446390658174096,
+      "false_reject_rate": 0.10124734607218684
+    },
+    {
+      "ablation": "independent_topk",
+      "avg_loaded_blocks": 14.007961783439491,
+      "decision_match_rate": 0.7023619957537155,
+      "dense_fallback_rate": 0.0,
+      "false_accept_rate": 0.25384819532908703,
+      "false_reject_rate": 0.04378980891719745
+    },
+    {
+      "ablation": "fixed_residual",
+      "avg_loaded_blocks": 11.282377919320595,
+      "decision_match_rate": 0.6876326963906582,
+      "dense_fallback_rate": 0.0,
+      "false_accept_rate": 0.25955414012738853,
+      "false_reject_rate": 0.05281316348195329
+    },
+    {
+      "ablation": "no_fallback",
+      "avg_loaded_blocks": 7.926220806794055,
+      "decision_match_rate": 0.7006369426751592,
+      "dense_fallback_rate": 0.0,
+      "false_accept_rate": 0.21430467091295116,
+      "false_reject_rate": 0.08505838641188959
+    },
+    {
+      "ablation": "dense_fallback_all_early",
+      "avg_loaded_blocks": 7.926220806794055,
+      "decision_match_rate": 1.0,
+      "dense_fallback_rate": 1.0,
+      "false_accept_rate": 0.0,
+      "false_reject_rate": 0.0
+    }
+  ]
+}

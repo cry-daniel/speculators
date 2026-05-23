@@ -1,0 +1,7 @@
+Mask Jaccard overlap
+dense_all_blocks: 1.0
+independent_topk: 0.5804033506793592
+shared_only: 1.0
+shared_fixed_residual: 0.7023218740840821
+pams: 0.741966111167279
+oracle_shared_residual: 0.7638642261253726

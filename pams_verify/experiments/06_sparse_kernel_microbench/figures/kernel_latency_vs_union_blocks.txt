@@ -1,0 +1,6 @@
+Reference kernel latency
+dense: 0.12162671191617846
+independent_sparse: 0.6230274108626569
+pams: 0.2910542389145121
+shared_fixed_residual: 0.3071650183604409
+shared_only: 0.2524096053093672

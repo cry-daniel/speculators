@@ -1,0 +1,1 @@
+python scripts/run_end2end_matrix.py --target-model Qwen/Qwen3-8B --draft-model Qwen/Qwen3-0.6B --workloads short_chat short_mtbench_like medium_sharegpt_like long_rag_4k long_output mixed_5090_safe --concurrency 1 2 4 8 --respect-memory-estimator true

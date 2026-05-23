@@ -1,0 +1,30 @@
+{
+  "compiled": false,
+  "exact_mode": true,
+  "high_risk_tokens": 1830,
+  "integration": "A_scheduler_hook",
+  "low_reach_suffix_tokens": 1533,
+  "outcome": "offline_policy_registered_no_live_vllm_hook",
+  "patched_vllm": false,
+  "ran_live_vllm": false,
+  "trace_rows": 7536,
+  "vllm_inspection": {
+    "arbitrary_block_mask_supported": false,
+    "attention_modules_checked": [
+      "/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm/v1/attention/__init__.py",
+      "/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm/v1/attention/backends/flex_attention.py",
+      "/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm/v1/attention/ops/triton_unified_attention.py",
+      "/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm/model_executor/layers/attention/__init__.py",
+      "/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm/transformers_utils/configs/speculators/__init__.py",
+      "/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm/v1/spec_decode/__init__.py"
+    ],
+    "has_pams_verify_config_arg": false,
+    "notes": [
+      "vllm.v1.attention.backends.flex_attention contains mask-like identifiers; these are backend/local masks, not a PAMS verifier-mask API.",
+      "No installed vLLM feature flag for PAMS was found. Arbitrary verifier block masks are treated as unsupported until a local vLLM source patch is applied."
+    ],
+    "package_path": "/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm",
+    "version": "0.20.0",
+    "vllm_imported": true
+  }
+}

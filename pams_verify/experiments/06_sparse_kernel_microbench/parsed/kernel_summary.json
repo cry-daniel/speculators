@@ -1,0 +1,16 @@
+{
+  "device": "cpu",
+  "mean_latency_ms_by_method": {
+    "dense": 0.1058023141619439,
+    "independent_sparse": 0.3476667043287307,
+    "pams": 0.28033107325124246,
+    "shared_fixed_residual": 0.29383497409677756,
+    "shared_only": 0.2604509451581786
+  },
+  "rows": 240,
+  "triton": {
+    "available": false,
+    "label": "reference_only",
+    "reason": "custom Triton kernel was not implemented; sparse_attention_ref is used for measured reference overhead"
+  }
+}

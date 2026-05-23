@@ -1,0 +1,113 @@
+{
+  "long_output": {
+    "concurrency": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "input_len": 512,
+    "max_model_len": 4096,
+    "name": "long_output",
+    "num_prompts": 64,
+    "output_len": 1024
+  },
+  "long_rag_4k": {
+    "concurrency": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "input_len": 4096,
+    "max_model_len": 8192,
+    "name": "long_rag_4k",
+    "num_prompts": 64,
+    "output_len": 256
+  },
+  "long_rag_8k": {
+    "concurrency": [
+      1,
+      2,
+      4
+    ],
+    "input_len": 8192,
+    "max_model_len": 16384,
+    "name": "long_rag_8k",
+    "num_prompts": 32,
+    "output_len": 256
+  },
+  "medium_sharegpt_like": {
+    "concurrency": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
+    "input_len": [
+      [
+        0.3,
+        256
+      ],
+      [
+        0.3,
+        512
+      ],
+      [
+        0.25,
+        1024
+      ],
+      [
+        0.15,
+        2048
+      ]
+    ],
+    "max_model_len": 4096,
+    "name": "medium_sharegpt_like",
+    "num_prompts": 128,
+    "output_len": 256
+  },
+  "mixed_5090_safe": {
+    "concurrency": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
+    "input_len": 512,
+    "max_model_len": 8192,
+    "name": "mixed_5090_safe",
+    "num_prompts": 128,
+    "output_len": 256
+  },
+  "short_chat": {
+    "concurrency": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
+    "input_len": 128,
+    "max_model_len": 2048,
+    "name": "short_chat",
+    "num_prompts": 128,
+    "output_len": 128
+  },
+  "short_mtbench_like": {
+    "concurrency": [
+      1,
+      2,
+      4,
+      8,
+      16
+    ],
+    "input_len": 512,
+    "max_model_len": 4096,
+    "name": "short_mtbench_like",
+    "num_prompts": 128,
+    "output_len": 256
+  }
+}

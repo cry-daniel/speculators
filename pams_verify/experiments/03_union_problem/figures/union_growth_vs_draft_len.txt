@@ -1,0 +1,7 @@
+Union growth by method
+dense_all_blocks: 1.0
+independent_topk: 1.8626938383161147
+shared_only: 1.0
+shared_fixed_residual: 1.5185774946921444
+pams: 1.4250322390696835
+oracle_shared_residual: 1.390071516370544

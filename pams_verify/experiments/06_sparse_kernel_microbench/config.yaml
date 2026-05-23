@@ -1,0 +1,20 @@
+model_config: Qwen/Qwen3-8B
+seq_lens:
+- 512
+- 2048
+- 4096
+- 8192
+draft_lens:
+- 2
+- 4
+- 8
+block_sizes:
+- 16
+- 32
+- 64
+batch_sizes:
+- 1
+- 2
+- 4
+- 8
+dtype: bfloat16

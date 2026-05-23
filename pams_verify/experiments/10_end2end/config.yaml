@@ -1,0 +1,26 @@
+target_model: Qwen/Qwen3-8B
+draft_model: Qwen/Qwen3-0.6B
+workloads:
+- short_chat
+- short_mtbench_like
+- medium_sharegpt_like
+- long_rag_4k
+- long_output
+- mixed_5090_safe
+concurrency:
+- 1
+- 2
+- 4
+- 8
+respect_memory_estimator: 'true'
+methods:
+- dense_no_spec
+- vllm_ngram_4
+- vllm_ngram_8
+- model_draft_fixed_4
+- model_draft_fixed_8
+- independent_sparse_verifier
+- shared_fixed_residual
+- pams
+- pams_fallback_exact
+- pams_fallback_approximate

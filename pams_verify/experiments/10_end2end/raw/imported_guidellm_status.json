@@ -1,0 +1,48 @@
+{
+  "available": true,
+  "path": "/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm/results/math_num_spec_tokens_sweep_20260522_173539/status.tsv",
+  "rows": [
+    [
+      "method",
+      "k",
+      "status",
+      "output_dir"
+    ],
+    [
+      "eagle3",
+      "2",
+      "ok",
+      "./results/math_num_spec_tokens_sweep_20260522_173539/eagle3_k2"
+    ],
+    [
+      "eagle3",
+      "3",
+      "ok",
+      "./results/math_num_spec_tokens_sweep_20260522_173539/eagle3_k3"
+    ],
+    [
+      "eagle3",
+      "4",
+      "ok",
+      "./results/math_num_spec_tokens_sweep_20260522_173539/eagle3_k4"
+    ],
+    [
+      "peagle",
+      "2",
+      "ok",
+      "./results/math_num_spec_tokens_sweep_20260522_173539/peagle_k2"
+    ],
+    [
+      "peagle",
+      "3",
+      "ok",
+      "./results/math_num_spec_tokens_sweep_20260522_173539/peagle_k3"
+    ],
+    [
+      "peagle",
+      "4",
+      "ok",
+      "./results/math_num_spec_tokens_sweep_20260522_173539/peagle_k4"
+    ]
+  ]
+}

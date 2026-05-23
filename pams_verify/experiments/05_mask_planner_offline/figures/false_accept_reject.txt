@@ -1,0 +1,8 @@
+Sparse decision mismatch
+dense_all_blocks: 0.0
+independent_topk: 0.2976380042462845
+shared_only: 0.3657112526539278
+shared_fixed_residual: 0.31236730360934184
+pams: 0.29936305732484075
+pams_fallback: 0.22014331210191082
+oracle_shared_residual: 0.36106687898089174

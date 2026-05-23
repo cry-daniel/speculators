@@ -1,0 +1,12 @@
+methods:
+- dense_all_blocks
+- independent_topk
+- shared_only
+- shared_fixed_residual
+- pams
+- oracle_shared_residual
+block_sizes:
+- 16
+- 32
+- 64
+label: offline_simulation

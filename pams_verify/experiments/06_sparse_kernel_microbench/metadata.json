@@ -1,0 +1,30 @@
+{
+  "cuda_version": "13.0",
+  "device": "cpu",
+  "git_commit_hash": "28d850983b58af3001835d66d5d020c54abec9ed",
+  "gpu_name": "unknown",
+  "gpu_vram": "unknown",
+  "hostname": "acalab-5090",
+  "kernel_summary": {
+    "dense": 0.1058023141619439,
+    "independent_sparse": 0.3476667043287307,
+    "pams": 0.28033107325124246,
+    "shared_fixed_residual": 0.29383497409677756,
+    "shared_only": 0.2604509451581786
+  },
+  "label": "kernel_microbenchmark",
+  "max_model_len": null,
+  "model_dtype": "bfloat16",
+  "model_name": "Qwen/Qwen3-8B",
+  "pytorch_version": "2.11.0+cu130",
+  "run_status": "completed_cpu_reference_scaled_down",
+  "seed": 0,
+  "timestamp": "2026-05-23T03:23:23+00:00",
+  "triton": {
+    "available": false,
+    "label": "reference_only",
+    "reason": "custom Triton kernel was not implemented; sparse_attention_ref is used for measured reference overhead"
+  },
+  "vllm_launch_args": [],
+  "vllm_version": "0.20.0"
+}

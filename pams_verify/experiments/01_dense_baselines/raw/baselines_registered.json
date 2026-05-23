@@ -1,0 +1,382 @@
+{
+  "runs": [
+    {
+      "concurrency": 1,
+      "method": "dense_no_spec",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 1,
+      "method": "vllm_ngram_4",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 1,
+      "method": "vllm_ngram_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 1,
+      "method": "vllm_suffix_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 1,
+      "method": "vllm_suffix_16",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 1,
+      "method": "model_draft_qwen3_0p6b_4",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 1,
+      "method": "model_draft_qwen3_0p6b_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 1,
+      "method": "eagle3",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 1,
+      "method": "p_eagle",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 2,
+      "method": "dense_no_spec",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 2,
+      "method": "vllm_ngram_4",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 2,
+      "method": "vllm_ngram_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 2,
+      "method": "vllm_suffix_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 2,
+      "method": "vllm_suffix_16",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 2,
+      "method": "model_draft_qwen3_0p6b_4",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 2,
+      "method": "model_draft_qwen3_0p6b_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 2,
+      "method": "eagle3",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 2,
+      "method": "p_eagle",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 4,
+      "method": "dense_no_spec",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 4,
+      "method": "vllm_ngram_4",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 4,
+      "method": "vllm_ngram_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 4,
+      "method": "vllm_suffix_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 4,
+      "method": "vllm_suffix_16",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 4,
+      "method": "model_draft_qwen3_0p6b_4",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 4,
+      "method": "model_draft_qwen3_0p6b_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 4,
+      "method": "eagle3",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 4,
+      "method": "p_eagle",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_chat"
+    },
+    {
+      "concurrency": 1,
+      "method": "dense_no_spec",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 1,
+      "method": "vllm_ngram_4",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 1,
+      "method": "vllm_ngram_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 1,
+      "method": "vllm_suffix_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 1,
+      "method": "vllm_suffix_16",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 1,
+      "method": "model_draft_qwen3_0p6b_4",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 1,
+      "method": "model_draft_qwen3_0p6b_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 1,
+      "method": "eagle3",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 1,
+      "method": "p_eagle",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 2,
+      "method": "dense_no_spec",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 2,
+      "method": "vllm_ngram_4",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 2,
+      "method": "vllm_ngram_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 2,
+      "method": "vllm_suffix_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 2,
+      "method": "vllm_suffix_16",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 2,
+      "method": "model_draft_qwen3_0p6b_4",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 2,
+      "method": "model_draft_qwen3_0p6b_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 2,
+      "method": "eagle3",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 2,
+      "method": "p_eagle",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 4,
+      "method": "dense_no_spec",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 4,
+      "method": "vllm_ngram_4",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 4,
+      "method": "vllm_ngram_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 4,
+      "method": "vllm_suffix_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 4,
+      "method": "vllm_suffix_16",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 4,
+      "method": "model_draft_qwen3_0p6b_4",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 4,
+      "method": "model_draft_qwen3_0p6b_8",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 4,
+      "method": "eagle3",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    },
+    {
+      "concurrency": 4,
+      "method": "p_eagle",
+      "reason": "vllm command not found",
+      "status": "blocked_vllm_bench_unavailable",
+      "workload": "short_mtbench_like"
+    }
+  ]
+}

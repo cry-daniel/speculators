@@ -1,0 +1,8 @@
+Quality per loaded block
+dense_all_blocks: 0.02019011284601288
+independent_topk: 0.054569976507142584
+shared_only: 0.10184151785714286
+shared_fixed_residual: 0.06634156238238614
+pams: 0.07969137145918435
+pams_fallback: 0.07969137145918435
+oracle_shared_residual: 0.08522977560116086

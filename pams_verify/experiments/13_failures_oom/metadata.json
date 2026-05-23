@@ -1,0 +1,23 @@
+{
+  "cuda_version": "13.0",
+  "degrade_order": [
+    "max_num_seqs",
+    "max_model_len",
+    "num_prompts",
+    "dtype_or_kv_cache_dtype"
+  ],
+  "git_commit_hash": "28d850983b58af3001835d66d5d020c54abec9ed",
+  "gpu_name": "unknown",
+  "gpu_vram": "unknown",
+  "hostname": "acalab-5090",
+  "max_model_len": 4096,
+  "model_dtype": "bfloat16",
+  "model_name": "Qwen/Qwen3-8B",
+  "oom_records": [],
+  "pytorch_version": "2.11.0+cu130",
+  "run_status": "completed_no_oom_observed",
+  "seed": 0,
+  "timestamp": "2026-05-23T03:23:38+00:00",
+  "vllm_launch_args": [],
+  "vllm_version": "0.20.0"
+}

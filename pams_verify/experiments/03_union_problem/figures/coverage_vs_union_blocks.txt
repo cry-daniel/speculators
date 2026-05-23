@@ -1,0 +1,7 @@
+Target top-block recall
+dense_all_blocks: 1.0
+independent_topk: 0.7644141454352441
+shared_only: 0.7265127388535032
+shared_fixed_residual: 0.7484905785562632
+pams: 0.631651406581741
+oracle_shared_residual: 0.872926618895966
