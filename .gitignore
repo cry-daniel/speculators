@@ -178,3 +178,8 @@ cython_debug/
 results*
 
 doc
+
+# Local generated speculator model variants
+examples/evaluate/eval-guidellm/models/
+
+speclink.md
