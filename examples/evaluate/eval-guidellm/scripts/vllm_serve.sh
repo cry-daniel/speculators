@@ -19,6 +19,13 @@ PARALLEL_DRAFTING=""
 TENSOR_PARALLEL_SIZE=""
 MAX_MODEL_LEN=""
 GPU_MEMORY_UTILIZATION=""
+MAX_NUM_BATCHED_TOKENS=""
+MAX_NUM_SEQS=""
+PERFORMANCE_MODE=""
+USE_LOCAL_ARGMAX_REDUCTION=""
+REJECTION_SAMPLE_METHOD=""
+DISABLE_SPECULATIVE_DECODING=""
+SPECULATIVE_TOKEN_TREE=""
 PORT=""
 HEALTH_CHECK_TIMEOUT=""
 SERVER_LOG=""
@@ -48,6 +55,14 @@ Optional:
   --tensor-parallel-size SIZE    Number of GPUs (default: 1)
   --max-model-len LENGTH         Max model length (default: 24000)
   --gpu-memory-utilization UTIL  GPU memory fraction (default: 0.85)
+  --max-num-batched-tokens N     vLLM scheduler token budget per iteration
+  --max-num-seqs N               Maximum active sequences
+  --performance-mode MODE        vLLM performance mode: balanced, interactivity, throughput
+  --use-local-argmax-reduction   Enable vLLM draft-token local argmax fast path
+  --rejection-sample-method METHOD
+                                 Rejection sampler: strict, probabilistic, synthetic
+  --speculative-token-tree TREE  Python literal tree choices for tree speculative decoding
+  --no-speculative-decoding       Serve the base model without speculative decoding
   --port PORT                    Server port (default: 8000)
   --health-check-timeout SECS    Health check timeout (default: 300)
   --log-file FILE                Log file path (default: vllm_server.log)
@@ -107,6 +122,34 @@ while [[ $# -gt 0 ]]; do
         --gpu-memory-utilization)
             GPU_MEMORY_UTILIZATION="$2"
             shift 2
+            ;;
+        --max-num-batched-tokens)
+            MAX_NUM_BATCHED_TOKENS="$2"
+            shift 2
+            ;;
+        --max-num-seqs)
+            MAX_NUM_SEQS="$2"
+            shift 2
+            ;;
+        --performance-mode)
+            PERFORMANCE_MODE="$2"
+            shift 2
+            ;;
+        --use-local-argmax-reduction)
+            USE_LOCAL_ARGMAX_REDUCTION="true"
+            shift
+            ;;
+        --rejection-sample-method)
+            REJECTION_SAMPLE_METHOD="$2"
+            shift 2
+            ;;
+        --speculative-token-tree)
+            SPECULATIVE_TOKEN_TREE="$2"
+            shift 2
+            ;;
+        --no-speculative-decoding)
+            DISABLE_SPECULATIVE_DECODING="true"
+            shift
             ;;
         --port)
             PORT="$2"
@@ -170,7 +213,7 @@ if [[ -z "${BASE_MODEL}" ]]; then
     exit 1
 fi
 
-if [[ "${PARALLEL_DRAFTING}" == "true" && -z "${SPECULATOR_MODEL}" ]]; then
+if [[ "${DISABLE_SPECULATIVE_DECODING}" != "true" && "${PARALLEL_DRAFTING}" == "true" && -z "${SPECULATOR_MODEL}" ]]; then
     echo "[ERROR] --parallel-drafting requires -s SPECULATOR_MODEL" >&2
     exit 1
 fi
@@ -179,35 +222,56 @@ fi
 # Start Server
 # ==============================================================================
 
-echo "[INFO] Starting vLLM server with speculative decoding"
+if [[ "${DISABLE_SPECULATIVE_DECODING}" == "true" ]]; then
+    echo "[INFO] Starting vLLM server without speculative decoding"
+else
+    echo "[INFO] Starting vLLM server with speculative decoding"
+fi
 echo "[INFO]   Base model: ${BASE_MODEL}"
-echo "[INFO]   Speculator model: ${SPECULATOR_MODEL:-(built-in MTP head)}"
-echo "[INFO]   Num speculative tokens: ${NUM_SPEC_TOKENS}"
-echo "[INFO]   Method: ${METHOD}"
-echo "[INFO]   Parallel drafting: ${PARALLEL_DRAFTING}"
+if [[ "${DISABLE_SPECULATIVE_DECODING}" != "true" ]]; then
+    echo "[INFO]   Speculator model: ${SPECULATOR_MODEL:-(built-in MTP head)}"
+    echo "[INFO]   Num speculative tokens: ${NUM_SPEC_TOKENS}"
+    echo "[INFO]   Method: ${METHOD}"
+    echo "[INFO]   Parallel drafting: ${PARALLEL_DRAFTING}"
+fi
 echo "[INFO]   Tensor parallel size: ${TENSOR_PARALLEL_SIZE}"
 echo "[INFO]   Max model length: ${MAX_MODEL_LEN}"
 echo "[INFO]   GPU memory utilization: ${GPU_MEMORY_UTILIZATION}"
+[[ -n "${MAX_NUM_BATCHED_TOKENS}" ]] && echo "[INFO]   Max num batched tokens: ${MAX_NUM_BATCHED_TOKENS}"
+[[ -n "${MAX_NUM_SEQS}" ]] && echo "[INFO]   Max num seqs: ${MAX_NUM_SEQS}"
+[[ -n "${PERFORMANCE_MODE}" ]] && echo "[INFO]   Performance mode: ${PERFORMANCE_MODE}"
+[[ "${USE_LOCAL_ARGMAX_REDUCTION}" == "true" ]] && echo "[INFO]   Local argmax reduction: enabled"
+[[ -n "${REJECTION_SAMPLE_METHOD}" ]] && echo "[INFO]   Rejection sample method: ${REJECTION_SAMPLE_METHOD}"
+[[ -n "${SPECULATIVE_TOKEN_TREE}" ]] && echo "[INFO]   Speculative token tree: ${SPECULATIVE_TOKEN_TREE}"
 echo "[INFO]   Port: ${PORT}"
 echo "[INFO]   Log file: ${SERVER_LOG}"
 [[ -n "${TOKENIZER_MODE}" ]] && echo "[INFO]   Tokenizer mode: ${TOKENIZER_MODE}"
 [[ "${NO_CHUNKED_PREFILL}" == "true" ]] && echo "[INFO]   Chunked prefill: disabled"
 
-# Build speculative-config JSON:
-#   With external speculator (Eagle): include model + max_model_len fields
-#   Without speculator (MTP built-in): method + num_speculative_tokens only
-if [[ -n "${SPECULATOR_MODEL}" ]]; then
-    SPEC_CONFIG="{\"model\": \"${SPECULATOR_MODEL}\", \"num_speculative_tokens\": ${NUM_SPEC_TOKENS}, \"method\": \"${METHOD}\", \"max_model_len\": ${MAX_MODEL_LEN}"
-else
-    SPEC_CONFIG="{\"method\": \"${METHOD}\", \"num_speculative_tokens\": ${NUM_SPEC_TOKENS}"
+SPEC_CONFIG=""
+if [[ "${DISABLE_SPECULATIVE_DECODING}" != "true" ]]; then
+    # Build speculative-config JSON:
+    #   With external speculator (Eagle): include model + max_model_len fields
+    #   Without speculator (MTP built-in): method + num_speculative_tokens only
+    if [[ -n "${SPECULATOR_MODEL}" ]]; then
+        SPEC_CONFIG="{\"model\": \"${SPECULATOR_MODEL}\", \"num_speculative_tokens\": ${NUM_SPEC_TOKENS}, \"method\": \"${METHOD}\", \"max_model_len\": ${MAX_MODEL_LEN}"
+    else
+        SPEC_CONFIG="{\"method\": \"${METHOD}\", \"num_speculative_tokens\": ${NUM_SPEC_TOKENS}"
+    fi
+    [[ "${PARALLEL_DRAFTING}" == "true" ]] && SPEC_CONFIG="${SPEC_CONFIG}, \"parallel_drafting\": true"
+    [[ "${USE_LOCAL_ARGMAX_REDUCTION}" == "true" ]] && SPEC_CONFIG="${SPEC_CONFIG}, \"use_local_argmax_reduction\": true"
+    [[ -n "${REJECTION_SAMPLE_METHOD}" ]] && SPEC_CONFIG="${SPEC_CONFIG}, \"rejection_sample_method\": \"${REJECTION_SAMPLE_METHOD}\""
+    [[ -n "${SPECULATIVE_TOKEN_TREE}" ]] && SPEC_CONFIG="${SPEC_CONFIG}, \"speculative_token_tree\": \"${SPECULATIVE_TOKEN_TREE}\""
+    SPEC_CONFIG="${SPEC_CONFIG}}"
 fi
-[[ "${PARALLEL_DRAFTING}" == "true" ]] && SPEC_CONFIG="${SPEC_CONFIG}, \"parallel_drafting\": true"
-SPEC_CONFIG="${SPEC_CONFIG}}"
 
 # Build optional extra flags
 EXTRA_FLAGS=()
 [[ -n "${TOKENIZER_MODE}" ]] && EXTRA_FLAGS+=(--tokenizer-mode "${TOKENIZER_MODE}")
 [[ "${NO_CHUNKED_PREFILL}" == "true" ]] && EXTRA_FLAGS+=(--no-enable-chunked-prefill)
+[[ -n "${MAX_NUM_BATCHED_TOKENS}" ]] && EXTRA_FLAGS+=(--max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}")
+[[ -n "${MAX_NUM_SEQS}" ]] && EXTRA_FLAGS+=(--max-num-seqs "${MAX_NUM_SEQS}")
+[[ -n "${PERFORMANCE_MODE}" ]] && EXTRA_FLAGS+=(--performance-mode "${PERFORMANCE_MODE}")
 
 # Fail fast if the port is already in use rather than burying the error in vLLM logs
 if ss -tlnp 2>/dev/null | grep -q ":${PORT} " || nc -z 127.0.0.1 "${PORT}" 2>/dev/null; then
@@ -215,15 +279,17 @@ if ss -tlnp 2>/dev/null | grep -q ":${PORT} " || nc -z 127.0.0.1 "${PORT}" 2>/de
     exit 1
 fi
 
-vllm serve "${BASE_MODEL}" \
-    --seed 42 \
-    --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
-    --max-model-len "${MAX_MODEL_LEN}" \
-    --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
-    --port "${PORT}" \
-    --speculative-config "${SPEC_CONFIG}" \
-    "${EXTRA_FLAGS[@]}" \
-    > "${SERVER_LOG}" 2>&1 &
+VLLM_ARGS=(
+    serve "${BASE_MODEL}"
+    --seed 42
+    --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}"
+    --max-model-len "${MAX_MODEL_LEN}"
+    --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}"
+    --port "${PORT}"
+)
+[[ "${DISABLE_SPECULATIVE_DECODING}" != "true" ]] && VLLM_ARGS+=(--speculative-config "${SPEC_CONFIG}")
+
+vllm "${VLLM_ARGS[@]}" "${EXTRA_FLAGS[@]}" > "${SERVER_LOG}" 2>&1 &
 
 VLLM_PID=$!
 echo "${VLLM_PID}" > "${PID_FILE}"

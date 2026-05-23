@@ -18,6 +18,7 @@ GUIDELLM_LOG=""
 TEMPERATURE=""
 TOP_P=""
 TOP_K=""
+MAX_TOKENS=""
 GUIDELLM_RATE="${GUIDELLM_RATE:-}"
 REQUEST_TYPE="${REQUEST_TYPE:-}"
 
@@ -44,6 +45,7 @@ Optional:
   --temperature TEMP        Sampling temperature (default: 0.6)
   --top-p TOP_P            Top-p sampling (default: 0.95)
   --top-k TOP_K            Top-k sampling (default: 20)
+  --max-tokens N           Max output tokens in each request
   --rate RATE              Throughput max concurrency (default: 64)
   --request-type TYPE      GuideLLM request type (default: chat_completions)
   -h, --help               Show this help message
@@ -91,6 +93,10 @@ while [[ $# -gt 0 ]]; do
             TOP_K="$2"
             shift 2
             ;;
+        --max-tokens)
+            MAX_TOKENS="$2"
+            shift 2
+            ;;
         --rate)
             GUIDELLM_RATE="$2"
             shift 2
@@ -124,6 +130,11 @@ TOP_P="${TOP_P:-0.95}"
 TOP_K="${TOP_K:-20}"
 GUIDELLM_RATE="${GUIDELLM_RATE:-64}"
 REQUEST_TYPE="${REQUEST_TYPE:-chat_completions}"
+
+REQUEST_BODY="{\"temperature\":${TEMPERATURE}, \"top_p\":${TOP_P}, \"top_k\":${TOP_K}}"
+if [[ -n "${MAX_TOKENS}" ]]; then
+    REQUEST_BODY="{\"temperature\":${TEMPERATURE}, \"top_p\":${TOP_P}, \"top_k\":${TOP_K}, \"max_tokens\":${MAX_TOKENS}}"
+fi
 
 # ==============================================================================
 # Validate Arguments
@@ -241,6 +252,7 @@ for dataset_file in "${DATASET_FILES[@]}"; do
     echo "[INFO]   Request type: ${REQUEST_TYPE}"
     echo "[INFO]   Throughput max concurrency: ${GUIDELLM_RATE}"
     echo "[INFO]   Sampling params - temperature: ${TEMPERATURE}, top_p: ${TOP_P}, top_k: ${TOP_K}"
+    [[ -n "${MAX_TOKENS}" ]] && echo "[INFO]   Max output tokens: ${MAX_TOKENS}"
     echo "[INFO]   Output: ${output_file}"
 
     guidellm benchmark run \
@@ -250,7 +262,7 @@ for dataset_file in "${DATASET_FILES[@]}"; do
       --profile throughput \
       --rate "${GUIDELLM_RATE}" \
       --output-path "${output_file}" \
-      --backend-args "{\"extras\": {\"body\": {\"temperature\":${TEMPERATURE}, \"top_p\":${TOP_P}, \"top_k\":${TOP_K}}}}" \
+      --backend-args "{\"extras\": {\"body\": ${REQUEST_BODY}}}" \
       | tee "${log_file}"
 
     echo "[INFO] Benchmark complete for: ${dataset_file}"

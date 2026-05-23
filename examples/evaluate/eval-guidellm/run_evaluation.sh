@@ -24,12 +24,20 @@ DATASET=""
 TENSOR_PARALLEL_SIZE=""
 MAX_MODEL_LEN=""
 GPU_MEMORY_UTILIZATION=""
+MAX_NUM_BATCHED_TOKENS=""
+MAX_NUM_SEQS=""
+PERFORMANCE_MODE=""
+USE_LOCAL_ARGMAX_REDUCTION=""
+REJECTION_SAMPLE_METHOD=""
+DISABLE_SPECULATIVE_DECODING=""
+SPECULATIVE_TOKEN_TREE=""
 PORT=""
 HEALTH_CHECK_TIMEOUT=""
 OUTPUT_DIR=""
 TEMPERATURE=""
 TOP_P=""
 TOP_K=""
+MAX_TOKENS=""
 TOKENIZER_MODE=""
 NO_CHUNKED_PREFILL=""
 
@@ -51,6 +59,26 @@ Optional:
   -o OUTPUT_DIR        Output directory (default: RESULTS_DIR/eval_results_TIMESTAMP)
   --results-dir DIR    Default output root (default: ${SCRIPT_DIR}/results)
   --num-spec-tokens N  Number of speculative tokens (default: 3)
+  --max-model-len N    vLLM maximum model length (default: 24000)
+  --max-num-batched-tokens N
+                       vLLM scheduler token budget per iteration
+  --max-num-seqs N     vLLM maximum active sequences
+  --performance-mode MODE
+                       vLLM performance mode: balanced, interactivity, throughput
+  --no-enable-chunked-prefill
+                       Disable vLLM chunked prefill
+  --use-local-argmax-reduction
+                       Enable vLLM draft-token local argmax fast path
+  --rejection-sample-method METHOD
+                       vLLM rejection sampler: strict, probabilistic, synthetic
+  --speculative-token-tree TREE
+                       Python literal tree choices for tree speculative decoding
+  --no-speculative-decoding
+                       Serve the base model without speculative decoding
+  --temperature TEMP   Sampling temperature passed to GuideLLM
+  --top-p TOP_P        Top-p sampling passed to GuideLLM
+  --top-k TOP_K        Top-k sampling passed to GuideLLM
+  --max-tokens N       Max output tokens passed to GuideLLM request body
   --port PORT          vLLM server port (default: 8000)
   --parallel-drafting  Enable vLLM parallel drafting for P-EAGLE
   -h, --help           Show this help message
@@ -127,6 +155,10 @@ while [[ $# -gt 0 ]]; do
             NUM_SPEC_TOKENS="$2"
             shift 2
             ;;
+        --max-model-len)
+            MAX_MODEL_LEN="$2"
+            shift 2
+            ;;
         --port)
             PORT="$2"
             shift 2
@@ -134,6 +166,54 @@ while [[ $# -gt 0 ]]; do
         --parallel-drafting)
             PARALLEL_DRAFTING="true"
             shift
+            ;;
+        --max-num-batched-tokens)
+            MAX_NUM_BATCHED_TOKENS="$2"
+            shift 2
+            ;;
+        --max-num-seqs)
+            MAX_NUM_SEQS="$2"
+            shift 2
+            ;;
+        --performance-mode)
+            PERFORMANCE_MODE="$2"
+            shift 2
+            ;;
+        --no-enable-chunked-prefill)
+            NO_CHUNKED_PREFILL="true"
+            shift
+            ;;
+        --use-local-argmax-reduction)
+            USE_LOCAL_ARGMAX_REDUCTION="true"
+            shift
+            ;;
+        --rejection-sample-method)
+            REJECTION_SAMPLE_METHOD="$2"
+            shift 2
+            ;;
+        --speculative-token-tree)
+            SPECULATIVE_TOKEN_TREE="$2"
+            shift 2
+            ;;
+        --no-speculative-decoding)
+            DISABLE_SPECULATIVE_DECODING="true"
+            shift
+            ;;
+        --temperature)
+            TEMPERATURE="$2"
+            shift 2
+            ;;
+        --top-p)
+            TOP_P="$2"
+            shift 2
+            ;;
+        --top-k)
+            TOP_K="$2"
+            shift 2
+            ;;
+        --max-tokens)
+            MAX_TOKENS="$2"
+            shift 2
             ;;
         -h|--help)
             show_usage
@@ -213,12 +293,12 @@ if ! check_dependencies; then
 fi
 
 # eagle3 requires an external speculator; mtp uses the built-in head
-if [[ "${METHOD}" == "eagle3" && -z "${SPECULATOR_MODEL}" ]]; then
+if [[ "${DISABLE_SPECULATIVE_DECODING}" != "true" && "${METHOD}" == "eagle3" && -z "${SPECULATOR_MODEL}" ]]; then
     echo "[ERROR] METHOD=eagle3 requires SPECULATOR_MODEL to be set (use -s or set it in the config file)" >&2
     exit 1
 fi
 
-if [[ "${PARALLEL_DRAFTING}" == "true" && -z "${SPECULATOR_MODEL}" ]]; then
+if [[ "${DISABLE_SPECULATIVE_DECODING}" != "true" && "${PARALLEL_DRAFTING}" == "true" && -z "${SPECULATOR_MODEL}" ]]; then
     echo "[ERROR] PARALLEL_DRAFTING=true requires SPECULATOR_MODEL to be set" >&2
     exit 1
 fi
@@ -266,6 +346,13 @@ SERVE_ARGS=(
 [[ -n "${TOKENIZER_MODE}" ]] && SERVE_ARGS+=(--tokenizer-mode "${TOKENIZER_MODE}")
 [[ "${NO_CHUNKED_PREFILL}" == "true" ]] && SERVE_ARGS+=(--no-enable-chunked-prefill)
 [[ "${PARALLEL_DRAFTING}" == "true" ]] && SERVE_ARGS+=(--parallel-drafting)
+[[ -n "${MAX_NUM_BATCHED_TOKENS}" ]] && SERVE_ARGS+=(--max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}")
+[[ -n "${MAX_NUM_SEQS}" ]] && SERVE_ARGS+=(--max-num-seqs "${MAX_NUM_SEQS}")
+[[ -n "${PERFORMANCE_MODE}" ]] && SERVE_ARGS+=(--performance-mode "${PERFORMANCE_MODE}")
+[[ "${USE_LOCAL_ARGMAX_REDUCTION}" == "true" ]] && SERVE_ARGS+=(--use-local-argmax-reduction)
+[[ -n "${REJECTION_SAMPLE_METHOD}" ]] && SERVE_ARGS+=(--rejection-sample-method "${REJECTION_SAMPLE_METHOD}")
+[[ -n "${SPECULATIVE_TOKEN_TREE}" ]] && SERVE_ARGS+=(--speculative-token-tree "${SPECULATIVE_TOKEN_TREE}")
+[[ "${DISABLE_SPECULATIVE_DECODING}" == "true" ]] && SERVE_ARGS+=(--no-speculative-decoding)
 
 "${SCRIPT_DIR}/scripts/vllm_serve.sh" "${SERVE_ARGS[@]}"
 
@@ -275,7 +362,7 @@ SERVE_ARGS=(
 
 echo "[INFO] Running benchmark..."
 
-"${SCRIPT_DIR}/scripts/run_guidellm.sh" \
+GUIDELLM_ARGS=(
     -d "${DATASET}" \
     --target "http://localhost:${PORT}" \
     --output-file "${GUIDELLM_RESULTS}" \
@@ -283,6 +370,10 @@ echo "[INFO] Running benchmark..."
     --temperature "${TEMPERATURE}" \
     --top-p "${TOP_P}" \
     --top-k "${TOP_K}"
+)
+[[ -n "${MAX_TOKENS}" ]] && GUIDELLM_ARGS+=(--max-tokens "${MAX_TOKENS}")
+
+"${SCRIPT_DIR}/scripts/run_guidellm.sh" "${GUIDELLM_ARGS[@]}"
 
 # ==============================================================================
 # Parse Acceptance Lengths
@@ -292,14 +383,14 @@ echo "[INFO] Parsing acceptance lengths..."
 
 PARSER_SCRIPT="${SCRIPT_DIR}/scripts/parse_logs.py"
 
-if [[ ! -f "${PARSER_SCRIPT}" ]]; then
+if [[ "${DISABLE_SPECULATIVE_DECODING}" == "true" ]]; then
+    printf "Speculative decoding disabled; acceptance metrics are not applicable.\n" > "${ACCEPTANCE_RESULTS}"
+elif [[ ! -f "${PARSER_SCRIPT}" ]]; then
     echo "[ERROR] Parser script not found: ${PARSER_SCRIPT}" >&2
     exit 1
-fi
-
-if ! python "${PARSER_SCRIPT}" "${SERVER_LOG}" -o "${ACCEPTANCE_RESULTS}"; then
-    echo "[ERROR] Failed to parse acceptance lengths" >&2
-    exit 1
+elif ! python "${PARSER_SCRIPT}" "${SERVER_LOG}" -o "${ACCEPTANCE_RESULTS}"; then
+    echo "[WARN] Failed to parse acceptance lengths; benchmark results are still available" >&2
+    printf "SpecDecoding metrics were not found in the server log. This can happen in short runs that finish before vLLM emits periodic metrics.\n" > "${ACCEPTANCE_RESULTS}"
 fi
 
 # ==============================================================================
