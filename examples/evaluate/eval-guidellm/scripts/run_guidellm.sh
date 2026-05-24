@@ -18,6 +18,7 @@ GUIDELLM_LOG=""
 TEMPERATURE=""
 TOP_P=""
 TOP_K=""
+MAX_TOKENS=""
 GUIDELLM_RATE="${GUIDELLM_RATE:-}"
 REQUEST_TYPE="${REQUEST_TYPE:-}"
 
@@ -44,6 +45,7 @@ Optional:
   --temperature TEMP        Sampling temperature (default: 0.6)
   --top-p TOP_P            Top-p sampling (default: 0.95)
   --top-k TOP_K            Top-k sampling (default: 20)
+  --max-tokens TOKENS      Maximum generated tokens (default: unset)
   --rate RATE              Throughput max concurrency (default: 64)
   --request-type TYPE      GuideLLM request type (default: chat_completions)
   -h, --help               Show this help message
@@ -89,6 +91,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --top-k)
             TOP_K="$2"
+            shift 2
+            ;;
+        --max-tokens)
+            MAX_TOKENS="$2"
             shift 2
             ;;
         --rate)
@@ -240,8 +246,14 @@ for dataset_file in "${DATASET_FILES[@]}"; do
     echo "[INFO]   Dataset: ${dataset_file}"
     echo "[INFO]   Request type: ${REQUEST_TYPE}"
     echo "[INFO]   Throughput max concurrency: ${GUIDELLM_RATE}"
-    echo "[INFO]   Sampling params - temperature: ${TEMPERATURE}, top_p: ${TOP_P}, top_k: ${TOP_K}"
+    echo "[INFO]   Sampling params - temperature: ${TEMPERATURE}, top_p: ${TOP_P}, top_k: ${TOP_K}, max_tokens: ${MAX_TOKENS:-unset}"
     echo "[INFO]   Output: ${output_file}"
+
+    backend_body="{\"temperature\":${TEMPERATURE}, \"top_p\":${TOP_P}, \"top_k\":${TOP_K}"
+    if [[ -n "${MAX_TOKENS}" ]]; then
+        backend_body="${backend_body}, \"max_tokens\":${MAX_TOKENS}"
+    fi
+    backend_body="${backend_body}}"
 
     guidellm benchmark run \
       --target "${TARGET}" \
@@ -250,7 +262,7 @@ for dataset_file in "${DATASET_FILES[@]}"; do
       --profile throughput \
       --rate "${GUIDELLM_RATE}" \
       --output-path "${output_file}" \
-      --backend-args "{\"extras\": {\"body\": {\"temperature\":${TEMPERATURE}, \"top_p\":${TOP_P}, \"top_k\":${TOP_K}}}}" \
+      --backend-args "{\"extras\": {\"body\": ${backend_body}}}" \
       | tee "${log_file}"
 
     echo "[INFO] Benchmark complete for: ${dataset_file}"

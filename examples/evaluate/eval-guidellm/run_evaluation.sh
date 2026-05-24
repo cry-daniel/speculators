@@ -292,6 +292,10 @@ echo "[INFO] Parsing acceptance lengths..."
 
 PARSER_SCRIPT="${SCRIPT_DIR}/scripts/parse_logs.py"
 
+if [[ "${METHOD}" == "dense" || "${NUM_SPEC_TOKENS}" == "0" ]]; then
+    echo "[INFO] Dense run: no speculative acceptance metrics to parse."
+    echo "dense run: no speculative acceptance metrics" > "${ACCEPTANCE_RESULTS}"
+else
 if [[ ! -f "${PARSER_SCRIPT}" ]]; then
     echo "[ERROR] Parser script not found: ${PARSER_SCRIPT}" >&2
     exit 1
@@ -300,6 +304,7 @@ fi
 if ! python "${PARSER_SCRIPT}" "${SERVER_LOG}" -o "${ACCEPTANCE_RESULTS}"; then
     echo "[ERROR] Failed to parse acceptance lengths" >&2
     exit 1
+fi
 fi
 
 # ==============================================================================

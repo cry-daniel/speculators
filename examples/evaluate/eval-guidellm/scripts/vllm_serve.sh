@@ -179,9 +179,16 @@ fi
 # Start Server
 # ==============================================================================
 
-echo "[INFO] Starting vLLM server with speculative decoding"
+if [[ "${METHOD}" == "dense" || "${NUM_SPEC_TOKENS}" == "0" ]]; then
+    SPECULATIVE_ENABLED="false"
+else
+    SPECULATIVE_ENABLED="true"
+fi
+
+echo "[INFO] Starting vLLM server"
 echo "[INFO]   Base model: ${BASE_MODEL}"
-echo "[INFO]   Speculator model: ${SPECULATOR_MODEL:-(built-in MTP head)}"
+echo "[INFO]   Speculative decoding: ${SPECULATIVE_ENABLED}"
+echo "[INFO]   Speculator model: ${SPECULATOR_MODEL:-(none or built-in MTP head)}"
 echo "[INFO]   Num speculative tokens: ${NUM_SPEC_TOKENS}"
 echo "[INFO]   Method: ${METHOD}"
 echo "[INFO]   Parallel drafting: ${PARALLEL_DRAFTING}"
@@ -192,17 +199,6 @@ echo "[INFO]   Port: ${PORT}"
 echo "[INFO]   Log file: ${SERVER_LOG}"
 [[ -n "${TOKENIZER_MODE}" ]] && echo "[INFO]   Tokenizer mode: ${TOKENIZER_MODE}"
 [[ "${NO_CHUNKED_PREFILL}" == "true" ]] && echo "[INFO]   Chunked prefill: disabled"
-
-# Build speculative-config JSON:
-#   With external speculator (Eagle): include model + max_model_len fields
-#   Without speculator (MTP built-in): method + num_speculative_tokens only
-if [[ -n "${SPECULATOR_MODEL}" ]]; then
-    SPEC_CONFIG="{\"model\": \"${SPECULATOR_MODEL}\", \"num_speculative_tokens\": ${NUM_SPEC_TOKENS}, \"method\": \"${METHOD}\", \"max_model_len\": ${MAX_MODEL_LEN}"
-else
-    SPEC_CONFIG="{\"method\": \"${METHOD}\", \"num_speculative_tokens\": ${NUM_SPEC_TOKENS}"
-fi
-[[ "${PARALLEL_DRAFTING}" == "true" ]] && SPEC_CONFIG="${SPEC_CONFIG}, \"parallel_drafting\": true"
-SPEC_CONFIG="${SPEC_CONFIG}}"
 
 # Build optional extra flags
 EXTRA_FLAGS=()
@@ -215,15 +211,32 @@ if ss -tlnp 2>/dev/null | grep -q ":${PORT} " || nc -z 127.0.0.1 "${PORT}" 2>/de
     exit 1
 fi
 
-vllm serve "${BASE_MODEL}" \
-    --seed 42 \
-    --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}" \
-    --max-model-len "${MAX_MODEL_LEN}" \
-    --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}" \
-    --port "${PORT}" \
-    --speculative-config "${SPEC_CONFIG}" \
-    "${EXTRA_FLAGS[@]}" \
-    > "${SERVER_LOG}" 2>&1 &
+VLLM_ARGS=(
+    serve "${BASE_MODEL}"
+    --seed 42
+    --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}"
+    --max-model-len "${MAX_MODEL_LEN}"
+    --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}"
+    --port "${PORT}"
+)
+
+if [[ "${SPECULATIVE_ENABLED}" == "true" ]]; then
+    # Build speculative-config JSON:
+    #   With external speculator (Eagle): include model + max_model_len fields.
+    #   Without speculator (MTP built-in): method + num_speculative_tokens only.
+    if [[ -n "${SPECULATOR_MODEL}" ]]; then
+        SPEC_CONFIG="{\"model\": \"${SPECULATOR_MODEL}\", \"num_speculative_tokens\": ${NUM_SPEC_TOKENS}, \"method\": \"${METHOD}\", \"max_model_len\": ${MAX_MODEL_LEN}"
+    else
+        SPEC_CONFIG="{\"method\": \"${METHOD}\", \"num_speculative_tokens\": ${NUM_SPEC_TOKENS}"
+    fi
+    [[ "${PARALLEL_DRAFTING}" == "true" ]] && SPEC_CONFIG="${SPEC_CONFIG}, \"parallel_drafting\": true"
+    SPEC_CONFIG="${SPEC_CONFIG}}"
+    VLLM_ARGS+=(--speculative-config "${SPEC_CONFIG}")
+fi
+
+VLLM_ARGS+=("${EXTRA_FLAGS[@]}")
+
+vllm "${VLLM_ARGS[@]}" > "${SERVER_LOG}" 2>&1 &
 
 VLLM_PID=$!
 echo "${VLLM_PID}" > "${PID_FILE}"
