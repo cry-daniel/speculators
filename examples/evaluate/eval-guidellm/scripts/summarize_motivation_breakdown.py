@@ -47,13 +47,22 @@ SUMMARY_FIELDS = [
     "avg_scheduled_tokens",
     "decode_total_ms_per_iter",
     "decode_verify_ms_per_iter",
+    "decode_verify_qkv_proj_ms_per_iter",
+    "decode_verify_attention_ms_per_iter",
+    "decode_verify_ffn_ms_per_iter",
+    "decode_verify_model_other_ms_per_iter",
     "decode_draft_ms_per_iter",
     "decode_accept_reject_ms_per_iter",
     "decode_other_ms_per_iter",
     "decode_verify_pct",
+    "decode_verify_qkv_proj_pct_of_verify",
+    "decode_verify_attention_pct_of_verify",
+    "decode_verify_ffn_pct_of_verify",
+    "decode_verify_model_other_pct_of_verify",
     "decode_draft_pct",
     "decode_accept_reject_pct",
     "decode_other_pct",
+    "verify_detail_events",
     "prefill_events",
     "prefill_total_ms",
     "prefill_verify_ms",
@@ -77,6 +86,22 @@ CONCISE_FIELDS = [
 ]
 
 
+VERIFY_DETAIL_FIELDS = [
+    "model",
+    "batch_size",
+    "num_spec_tokens",
+    "verify_qkv_proj_pct",
+    "verify_attention_pct",
+    "verify_ffn_pct",
+    "verify_model_other_pct",
+    "verify_qkv_proj_ms_per_iter",
+    "verify_attention_ms_per_iter",
+    "verify_ffn_ms_per_iter",
+    "verify_model_other_ms_per_iter",
+    "verify_total_ms_per_iter",
+]
+
+
 RAW_EVENT_FIELDS = [
     "algo",
     "batch_size",
@@ -90,6 +115,10 @@ RAW_EVENT_FIELDS = [
     "num_tokens_padded",
     "num_draft_tokens",
     "verify_forward_ms",
+    "verify_qkv_proj_ms",
+    "verify_attention_ms",
+    "verify_ffn_ms",
+    "verify_model_other_ms",
     "draft_forward_ms",
     "accept_reject_ms",
     "other_ms",
@@ -417,10 +446,39 @@ def summarize_run(run_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]], 
     ]
     if not decode_events:
         decode_events = [event for event in events if event.get("phase") == "decode"]
+    detail_keys = [
+        "verify_qkv_proj_ms",
+        "verify_attention_ms",
+        "verify_ffn_ms",
+        "verify_model_other_ms",
+    ]
+    verify_detail_events = [
+        event
+        for event in decode_events
+        if any(to_float(event.get(key)) is not None for key in detail_keys)
+    ]
     prefill_events = [event for event in events if event.get("phase") == "prefill"]
 
     decode_total = sum_field(decode_events, "measured_total_ms")
     decode_verify = sum_field(decode_events, "verify_forward_ms")
+    decode_verify_qkv = (
+        sum_field(decode_events, "verify_qkv_proj_ms")
+        if verify_detail_events
+        else None
+    )
+    decode_verify_attention = (
+        sum_field(decode_events, "verify_attention_ms")
+        if verify_detail_events
+        else None
+    )
+    decode_verify_ffn = (
+        sum_field(decode_events, "verify_ffn_ms") if verify_detail_events else None
+    )
+    decode_verify_model_other = (
+        sum_field(decode_events, "verify_model_other_ms")
+        if verify_detail_events
+        else None
+    )
     decode_draft = sum_field(decode_events, "draft_forward_ms")
     decode_accept = sum_field(decode_events, "accept_reject_ms")
     decode_other = sum_field(decode_events, "other_ms")
@@ -429,8 +487,14 @@ def summarize_run(run_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]], 
     def per_iter(value: float) -> float | None:
         return value / decode_count if decode_count else None
 
+    def maybe_per_iter(value: float | None) -> float | None:
+        return value / decode_count if value is not None and decode_count else None
+
     def pct(value: float) -> float | None:
         return value / decode_total if decode_total else None
+
+    def verify_pct(value: float | None) -> float | None:
+        return value / decode_verify if value is not None and decode_verify else None
 
     guidellm = parse_guidellm_json(run_dir / "guidellm_results.json")
     guidellm.update(
@@ -464,13 +528,30 @@ def summarize_run(run_dir: Path) -> tuple[dict[str, Any], list[dict[str, Any]], 
         "avg_scheduled_tokens": mean_field(decode_events, "scheduled_tokens"),
         "decode_total_ms_per_iter": per_iter(decode_total),
         "decode_verify_ms_per_iter": per_iter(decode_verify),
+        "decode_verify_qkv_proj_ms_per_iter": maybe_per_iter(decode_verify_qkv),
+        "decode_verify_attention_ms_per_iter": maybe_per_iter(
+            decode_verify_attention
+        ),
+        "decode_verify_ffn_ms_per_iter": maybe_per_iter(decode_verify_ffn),
+        "decode_verify_model_other_ms_per_iter": maybe_per_iter(
+            decode_verify_model_other
+        ),
         "decode_draft_ms_per_iter": per_iter(decode_draft),
         "decode_accept_reject_ms_per_iter": per_iter(decode_accept),
         "decode_other_ms_per_iter": per_iter(decode_other),
         "decode_verify_pct": pct(decode_verify),
+        "decode_verify_qkv_proj_pct_of_verify": verify_pct(decode_verify_qkv),
+        "decode_verify_attention_pct_of_verify": verify_pct(
+            decode_verify_attention
+        ),
+        "decode_verify_ffn_pct_of_verify": verify_pct(decode_verify_ffn),
+        "decode_verify_model_other_pct_of_verify": verify_pct(
+            decode_verify_model_other
+        ),
         "decode_draft_pct": pct(decode_draft),
         "decode_accept_reject_pct": pct(decode_accept),
         "decode_other_pct": pct(decode_other),
+        "verify_detail_events": len(verify_detail_events),
         "prefill_events": len(prefill_events),
         "prefill_total_ms": sum_field(prefill_events, "measured_total_ms"),
         "prefill_verify_ms": sum_field(prefill_events, "verify_forward_ms"),
@@ -546,6 +627,70 @@ def build_concise_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return concise_rows
+
+
+def build_verify_detail_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def rounded(value: float | None, digits: int) -> float | None:
+        return round(value, digits) if value is not None else None
+
+    detail_rows = []
+    for row in rows:
+        if not (to_float(row.get("verify_detail_events")) or 0.0):
+            continue
+        detail_rows.append(
+            {
+                "model": row.get("algo"),
+                "batch_size": row.get("batch_size"),
+                "num_spec_tokens": row.get("num_spec_tokens"),
+                "verify_qkv_proj_pct": rounded(
+                    (
+                        to_float(row.get("decode_verify_qkv_proj_pct_of_verify"))
+                        or 0.0
+                    )
+                    * 100.0,
+                    2,
+                ),
+                "verify_attention_pct": rounded(
+                    (
+                        to_float(row.get("decode_verify_attention_pct_of_verify"))
+                        or 0.0
+                    )
+                    * 100.0,
+                    2,
+                ),
+                "verify_ffn_pct": rounded(
+                    (to_float(row.get("decode_verify_ffn_pct_of_verify")) or 0.0)
+                    * 100.0,
+                    2,
+                ),
+                "verify_model_other_pct": rounded(
+                    (
+                        to_float(
+                            row.get("decode_verify_model_other_pct_of_verify")
+                        )
+                        or 0.0
+                    )
+                    * 100.0,
+                    2,
+                ),
+                "verify_qkv_proj_ms_per_iter": rounded(
+                    to_float(row.get("decode_verify_qkv_proj_ms_per_iter")), 3
+                ),
+                "verify_attention_ms_per_iter": rounded(
+                    to_float(row.get("decode_verify_attention_ms_per_iter")), 3
+                ),
+                "verify_ffn_ms_per_iter": rounded(
+                    to_float(row.get("decode_verify_ffn_ms_per_iter")), 3
+                ),
+                "verify_model_other_ms_per_iter": rounded(
+                    to_float(row.get("decode_verify_model_other_ms_per_iter")), 3
+                ),
+                "verify_total_ms_per_iter": rounded(
+                    to_float(row.get("decode_verify_ms_per_iter")), 3
+                ),
+            }
+        )
+    return detail_rows
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
@@ -791,6 +936,131 @@ def draw_svg(path: Path, rows: list[dict[str, Any]]) -> None:
     path.write_text("\n".join(parts), encoding="utf-8")
 
 
+def draw_verify_detail_svg(path: Path, rows: list[dict[str, Any]]) -> None:
+    usable = [
+        row
+        for row in rows
+        if to_float(row.get("verify_detail_events"))
+        and to_float(row.get("decode_verify_ms_per_iter"))
+        and row.get("algo") is not None
+        and row.get("batch_size") is not None
+        and row.get("num_spec_tokens") is not None
+    ]
+    width = 1500
+    height = 650
+    if not usable:
+        path.write_text(
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="220">'
+            '<text x="30" y="60" font-family="Arial" font-size="18">No verify-detail data found.</text>'
+            "</svg>",
+            encoding="utf-8",
+        )
+        return
+
+    ks = sorted({int(row["num_spec_tokens"]) for row in usable})
+    batches = sorted({int(row["batch_size"]) for row in usable})
+    algos = [algo for algo in ["eagle3", "peagle"] if any(row["algo"] == algo for row in usable)]
+    colors = {
+        "qkv": "#4c78a8",
+        "attn": "#f58518",
+        "ffn": "#54a24b",
+        "other": "#9d755d",
+    }
+    comp_keys = [
+        ("qkv", "decode_verify_qkv_proj_ms_per_iter"),
+        ("attn", "decode_verify_attention_ms_per_iter"),
+        ("ffn", "decode_verify_ffn_ms_per_iter"),
+        ("other", "decode_verify_model_other_ms_per_iter"),
+    ]
+    panel_gap = 40
+    margin_left = 70
+    margin_right = 40
+    margin_top = 70
+    margin_bottom = 90
+    panel_width = (width - margin_left - margin_right - panel_gap * (len(ks) - 1)) / len(ks)
+    plot_height = height - margin_top - margin_bottom
+    max_total = max(to_float(row.get("decode_verify_ms_per_iter")) or 0.0 for row in usable)
+    max_total = max_total * 1.18 if max_total else 1.0
+
+    def row_for(k: int, batch: int, algo: str) -> dict[str, Any] | None:
+        for row in usable:
+            if (
+                int(row["num_spec_tokens"]) == k
+                and int(row["batch_size"]) == batch
+                and row["algo"] == algo
+            ):
+                return row
+        return None
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        '<rect width="100%" height="100%" fill="white"/>',
+        '<text x="30" y="34" font-family="Arial" font-size="22" font-weight="700">Verify Breakdown: QKV / Attention / FFN</text>',
+        '<text x="30" y="56" font-family="Arial" font-size="12" fill="#555">Values are per vLLM decode iteration; labels are drawn directly on bars.</text>',
+    ]
+
+    for panel_idx, k in enumerate(ks):
+        x0 = margin_left + panel_idx * (panel_width + panel_gap)
+        y0 = margin_top
+        parts.append(
+            f'<text x="{x0}" y="{y0 - 18}" font-family="Arial" font-size="16" font-weight="700">NUM_SPEC_TOKENS={k}</text>'
+        )
+        parts.append(
+            f'<line x1="{x0}" y1="{y0 + plot_height}" x2="{x0 + panel_width}" y2="{y0 + plot_height}" stroke="#222"/>'
+        )
+        parts.append(
+            f'<line x1="{x0}" y1="{y0}" x2="{x0}" y2="{y0 + plot_height}" stroke="#222"/>'
+        )
+        for tick_idx in range(5):
+            value = max_total * tick_idx / 4
+            y = y0 + plot_height - value / max_total * plot_height
+            parts.append(
+                f'<line x1="{x0 - 4}" y1="{y}" x2="{x0 + panel_width}" y2="{y}" stroke="#e6e6e6"/>'
+            )
+            if panel_idx == 0:
+                parts.append(
+                    f'<text x="{x0 - 10}" y="{y + 4}" text-anchor="end" font-family="Arial" font-size="10" fill="#555">{value:.0f}</text>'
+                )
+
+        group_width = panel_width / max(len(batches), 1)
+        bar_width = min(24, group_width / (len(algos) + 1.8))
+        for batch_idx, batch in enumerate(batches):
+            group_center = x0 + group_width * batch_idx + group_width / 2
+            parts.append(
+                f'<text x="{group_center}" y="{y0 + plot_height + 22}" text-anchor="middle" font-family="Arial" font-size="11">bs={batch}</text>'
+            )
+            for algo_idx, algo in enumerate(algos):
+                row = row_for(k, batch, algo)
+                if row is None:
+                    continue
+                bar_x = group_center - (len(algos) * bar_width + (len(algos) - 1) * 5) / 2 + algo_idx * (bar_width + 5)
+                y_cursor = y0 + plot_height
+                total = to_float(row.get("decode_verify_ms_per_iter")) or 0.0
+                for label, key in comp_keys:
+                    value = to_float(row.get(key)) or 0.0
+                    h = value / max_total * plot_height
+                    y_cursor -= h
+                    parts.append(
+                        f'<rect x="{bar_x}" y="{y_cursor}" width="{bar_width}" height="{h}" fill="{colors[label]}"/>'
+                    )
+                    if h >= 18:
+                        parts.append(
+                            f'<text x="{bar_x + bar_width / 2}" y="{y_cursor + h / 2 + 3}" text-anchor="middle" font-family="Arial" font-size="9" fill="white">{label}</text>'
+                        )
+                parts.append(
+                    f'<text x="{bar_x + bar_width / 2}" y="{max(y0 + 10, y_cursor - 5)}" text-anchor="middle" font-family="Arial" font-size="10" fill="#222">{algo}</text>'
+                )
+                parts.append(
+                    f'<text x="{bar_x + bar_width / 2}" y="{y0 + plot_height + 39}" text-anchor="middle" font-family="Arial" font-size="10" fill="#444">{total:.0f}</text>'
+                )
+
+    parts.append(
+        f'<text x="{margin_left - 48}" y="{margin_top + plot_height / 2}" transform="rotate(-90 {margin_left - 48} {margin_top + plot_height / 2})" text-anchor="middle" font-family="Arial" font-size="12">verify ms / decode iteration</text>'
+    )
+    parts.append("</svg>")
+    path.write_text("\n".join(parts), encoding="utf-8")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Summarize motivation breakdown run directories."
@@ -826,8 +1096,14 @@ def main() -> None:
         )
     )
     concise_rows = build_concise_rows(rows)
+    verify_detail_rows = build_verify_detail_rows(rows)
 
     write_csv(output_root / "concise_summary.csv", concise_rows, CONCISE_FIELDS)
+    write_csv(
+        output_root / "verify_detail_summary.csv",
+        verify_detail_rows,
+        VERIFY_DETAIL_FIELDS,
+    )
     write_csv(output_root / "summary.csv", rows, SUMMARY_FIELDS)
     write_csv(output_root / "raw_events.csv", raw_events, RAW_EVENT_FIELDS)
     write_csv(
@@ -839,6 +1115,7 @@ def main() -> None:
         output_root / "motivation_breakdown.xlsx",
         [
             ("concise_summary", concise_rows, CONCISE_FIELDS),
+            ("verify_detail", verify_detail_rows, VERIFY_DETAIL_FIELDS),
             ("summary", rows, SUMMARY_FIELDS),
             ("raw_events", raw_events, RAW_EVENT_FIELDS),
             (
@@ -856,10 +1133,17 @@ def main() -> None:
         ],
     )
     draw_svg(output_root / "motivation_breakdown.svg", rows)
+    draw_verify_detail_svg(output_root / "motivation_verify_breakdown.svg", rows)
     print(f"[INFO] Wrote concise summary: {output_root / 'concise_summary.csv'}")
+    print(
+        f"[INFO] Wrote verify detail:   {output_root / 'verify_detail_summary.csv'}"
+    )
     print(f"[INFO] Wrote summary: {output_root / 'summary.csv'}")
     print(f"[INFO] Wrote Excel:   {output_root / 'motivation_breakdown.xlsx'}")
     print(f"[INFO] Wrote figure:  {output_root / 'motivation_breakdown.svg'}")
+    print(
+        f"[INFO] Wrote verify figure: {output_root / 'motivation_verify_breakdown.svg'}"
+    )
 
 
 if __name__ == "__main__":

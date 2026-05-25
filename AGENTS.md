@@ -118,6 +118,10 @@ Current local vLLM changes in `speculators/vllm` are Python-only:
   `SPECLINK_BREAKDOWN=1`, `SPECLINK_BREAKDOWN_OUT`,
   `SPECLINK_BREAKDOWN_ALGO`, `SPECLINK_BREAKDOWN_BATCH_SIZE`, and
   `SPECLINK_BREAKDOWN_NUM_SPEC_TOKENS`
+- Qwen3 verifier-detail instrumentation in
+  `vllm/model_executor/models/qwen3.py` and
+  `vllm/speclink_breakdown.py`, gated by
+  `SPECLINK_BREAKDOWN_VERIFY_DETAIL=1`
 
 Install or refresh vLLM from the repo root with editable mode. The current
 machine uses PyTorch `2.11.0+cu130`, so point the vLLM build at the conda
@@ -327,6 +331,8 @@ output experiment requested for EAGLE3 and P-EAGLE:
 - default `WARMUP_REQUESTS=4`
 - default `MAX_NUM_BATCHED_TOKENS=8192`
 - vLLM `--max-num-seqs` is set to the current batch/concurrency size
+- default `SPECLINK_BREAKDOWN_VERIFY_DETAIL=1`, which also passes
+  `--enforce-eager` to vLLM for this experiment
 
 Run it from `examples/evaluate/eval-guidellm`:
 
@@ -352,11 +358,15 @@ Outputs are written under `results/motivation_breakdown_TIMESTAMP/`, including:
   model, batch size, `NUM_SPEC_TOKENS`, decode-stage verify/draft/other
   percentages, generated tokens per decode iteration, and end-to-end mean
   latency.
+- `verify_detail_summary.csv`: Qwen3 verifier-only QKV projection, Attention,
+  FFN, and verifier-other percentages and per-iteration times. Attention here
+  includes q/k norm, RoPE, the attention kernel, and `o_proj`.
 - `summary.csv`
 - `raw_events.csv`
 - `acceptance.csv`
 - `motivation_breakdown.xlsx`, with `concise_summary` as the first sheet
 - `motivation_breakdown.svg`
+- `motivation_verify_breakdown.svg`
 
 For P-EAGLE with `NUM_SPEC_TOKENS=16` or `24`, keep the scheduler budget large
 enough. The default `MAX_NUM_BATCHED_TOKENS=8192` is intentional; vLLM otherwise
@@ -364,6 +374,10 @@ can fail during startup with `max_num_scheduled_tokens is set to ...`, because
 parallel drafting reserves additional draft-token slots. The script also checks
 that GuideLLM wrote a result JSON and that vLLM wrote breakdown events before it
 marks a run as `ok`.
+
+Set `SPECLINK_BREAKDOWN_VERIFY_DETAIL=0` to disable Qwen3 verify-detail
+instrumentation. The detail mode uses CUDA events inside Qwen3 verifier layers
+and is meant for breakdown analysis, not for clean throughput-only numbers.
 
 ## Current Run Notes
 

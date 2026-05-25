@@ -35,6 +35,8 @@ TEMPERATURE="${TEMPERATURE:-0.6}"
 TOP_P="${TOP_P:-0.95}"
 TOP_K="${TOP_K:-20}"
 SPECLINK_BREAKDOWN_SYNC="${SPECLINK_BREAKDOWN_SYNC:-1}"
+SPECLINK_BREAKDOWN_VERIFY_DETAIL="${SPECLINK_BREAKDOWN_VERIFY_DETAIL:-1}"
+SPECLINK_BREAKDOWN_VERIFY_DETAIL_ENFORCE_EAGER="${SPECLINK_BREAKDOWN_VERIFY_DETAIL_ENFORCE_EAGER:-${SPECLINK_BREAKDOWN_VERIFY_DETAIL}}"
 
 DRY_RUN=0
 SUMMARIZE_ONLY=""
@@ -63,6 +65,7 @@ Environment overrides:
   REQUESTS_PER_RUN=${REQUESTS_PER_RUN}
   WARMUP_REQUESTS=${WARMUP_REQUESTS}
   MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS}
+  SPECLINK_BREAKDOWN_VERIFY_DETAIL=${SPECLINK_BREAKDOWN_VERIFY_DETAIL}
   BASE_MODEL=${BASE_MODEL}
 
 Examples:
@@ -177,6 +180,17 @@ parallel_flag_for_algo() {
     return 0
 }
 
+is_truthy() {
+    case "${1:-0}" in
+        1|true|TRUE|yes|YES|on|ON)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 write_metadata() {
     local path="$1"
     local algo="$2"
@@ -204,6 +218,8 @@ data = {
     "max_num_seqs": int(sys.argv[3]),
     "vllm_source": "${REPO_VLLM_DIR}",
     "vllm_install": "editable",
+    "verify_detail": "${SPECLINK_BREAKDOWN_VERIFY_DETAIL}" in {"1", "true", "TRUE", "yes", "YES", "on", "ON"},
+    "verify_detail_enforce_eager": "${SPECLINK_BREAKDOWN_VERIFY_DETAIL_ENFORCE_EAGER}" in {"1", "true", "TRUE", "yes", "YES", "on", "ON"},
 }
 path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
 PY
@@ -245,6 +261,7 @@ run_case() {
     local acceptance_file="${run_dir}/acceptance_analysis.txt"
     local speculator_model
     local extra_parallel_flag
+    local -a serve_extra_flags
     local rc=0
 
     mkdir -p "${run_dir}"
@@ -254,6 +271,13 @@ run_case() {
 
     speculator_model="$(speculator_for_algo "${algo}")"
     extra_parallel_flag="$(parallel_flag_for_algo "${algo}")"
+    serve_extra_flags=()
+    if [[ -n "${extra_parallel_flag}" ]]; then
+        serve_extra_flags+=("${extra_parallel_flag}")
+    fi
+    if is_truthy "${SPECLINK_BREAKDOWN_VERIFY_DETAIL_ENFORCE_EAGER}"; then
+        serve_extra_flags+=(--enforce-eager)
+    fi
 
     echo "[INFO] Starting ${algo} bs=${batch_size} K=${num_spec_tokens}"
     set +e
@@ -265,6 +289,7 @@ run_case() {
         SPECLINK_BREAKDOWN_BATCH_SIZE="${batch_size}" \
         SPECLINK_BREAKDOWN_NUM_SPEC_TOKENS="${num_spec_tokens}" \
         SPECLINK_BREAKDOWN_SYNC="${SPECLINK_BREAKDOWN_SYNC}" \
+        SPECLINK_BREAKDOWN_VERIFY_DETAIL="${SPECLINK_BREAKDOWN_VERIFY_DETAIL}" \
         "${SCRIPT_DIR}/scripts/vllm_serve.sh" \
             -b "${BASE_MODEL}" \
             -s "${speculator_model}" \
@@ -279,7 +304,7 @@ run_case() {
             --health-check-timeout "${HEALTH_CHECK_TIMEOUT}" \
             --log-file "${server_log}" \
             --pid-file "${server_pid}" \
-            ${extra_parallel_flag} || exit $?
+            "${serve_extra_flags[@]}" || exit $?
 
         if [[ "${WARMUP_REQUESTS}" -gt 0 ]]; then
             echo "[INFO] Warmup ${algo} bs=${batch_size} K=${num_spec_tokens}"

@@ -106,6 +106,11 @@ from vllm.platforms import current_platform
 from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingType
 from vllm.sequence import IntermediateTensors
+from vllm.speclink_breakdown import (
+    begin_verify_detail,
+    end_verify_detail,
+    snapshot_verify_detail,
+)
 from vllm.tasks import GenerationTask, PoolingTask, SupportedTask
 from vllm.tracing import instrument
 from vllm.utils import length_from_prompt_token_ids_or_embeds
@@ -493,6 +498,23 @@ def _speclink_finish_breakdown_event(
         event["measured_total_ms"] = None
         event["other_ms"] = None
     _speclink_write_breakdown_event(event)
+
+
+def _speclink_add_verify_detail(
+    event: dict[str, Any],
+    detail: dict[str, float],
+) -> None:
+    if not detail:
+        return
+    qkv_ms = float(detail.get("qkv_proj", 0.0))
+    attention_ms = float(detail.get("attention", 0.0))
+    ffn_ms = float(detail.get("ffn", 0.0))
+    verify_ms = float(event.get("verify_forward_ms") or 0.0)
+    known_ms = qkv_ms + attention_ms + ffn_ms
+    event["verify_qkv_proj_ms"] = qkv_ms
+    event["verify_attention_ms"] = attention_ms
+    event["verify_ffn_ms"] = ffn_ms
+    event["verify_model_other_ms"] = max(0.0, verify_ms - known_ms)
 
 
 # SPECLINK_MOTIVATION_BREAKDOWN_PATCH_END
@@ -4152,31 +4174,35 @@ class GPUModelRunner(
         )
         _speclink_breakdown_sync()
         speclink_verify_start = _speclink_breakdown_now()
-        with (
-            set_forward_context(
-                attn_metadata,
-                self.vllm_config,
-                num_tokens=num_tokens_padded,
-                num_tokens_across_dp=num_tokens_across_dp,
-                cudagraph_runtime_mode=cudagraph_mode,
-                batch_descriptor=batch_desc,
-                ubatch_slices=ubatch_slices_padded,
-                slot_mapping=slot_mappings,
-                skip_compiled=has_encoder_input,
-            ),
-            record_function_or_nullcontext("gpu_model_runner: forward"),
-            self.maybe_get_kv_connector_output(
-                scheduler_output,
-                defer_finalize=defer_kv_connector_finalize,
-            ) as kv_connector_output,
-        ):
-            model_output = self._model_forward(
-                input_ids=input_ids,
-                positions=positions,
-                intermediate_tensors=intermediate_tensors,
-                inputs_embeds=inputs_embeds,
-                **model_kwargs,
-            )
+        speclink_verify_detail, speclink_verify_detail_token = begin_verify_detail()
+        try:
+            with (
+                set_forward_context(
+                    attn_metadata,
+                    self.vllm_config,
+                    num_tokens=num_tokens_padded,
+                    num_tokens_across_dp=num_tokens_across_dp,
+                    cudagraph_runtime_mode=cudagraph_mode,
+                    batch_descriptor=batch_desc,
+                    ubatch_slices=ubatch_slices_padded,
+                    slot_mapping=slot_mappings,
+                    skip_compiled=has_encoder_input,
+                ),
+                record_function_or_nullcontext("gpu_model_runner: forward"),
+                self.maybe_get_kv_connector_output(
+                    scheduler_output,
+                    defer_finalize=defer_kv_connector_finalize,
+                ) as kv_connector_output,
+            ):
+                model_output = self._model_forward(
+                    input_ids=input_ids,
+                    positions=positions,
+                    intermediate_tensors=intermediate_tensors,
+                    inputs_embeds=inputs_embeds,
+                    **model_kwargs,
+                )
+        finally:
+            end_verify_detail(speclink_verify_detail_token)
 
         with record_function_or_nullcontext("gpu_model_runner: postprocess"):
             if self.use_aux_hidden_state_outputs:
@@ -4241,6 +4267,10 @@ class GPUModelRunner(
         if speclink_breakdown_event is not None:
             speclink_breakdown_event["verify_forward_ms"] = _speclink_elapsed_ms(
                 speclink_verify_start
+            )
+            _speclink_add_verify_detail(
+                speclink_breakdown_event,
+                snapshot_verify_detail(speclink_verify_detail),
             )
             self._speclink_breakdown_event = speclink_breakdown_event
 

@@ -27,6 +27,7 @@ SERVER_LOG=""
 PID_FILE=""
 TOKENIZER_MODE=""
 NO_CHUNKED_PREFILL=""
+ENFORCE_EAGER=""
 
 readonly SLEEP_INTERVAL=5
 
@@ -58,6 +59,7 @@ Optional:
   --pid-file FILE                PID file path (default: vllm_server.pid)
   --tokenizer-mode MODE          Tokenizer mode passed to vllm (e.g. auto)
   --no-enable-chunked-prefill    Pass --no-enable-chunked-prefill to vllm
+  --enforce-eager                Pass --enforce-eager to vllm
   -h, --help                     Show this help message
 
 Examples:
@@ -144,6 +146,10 @@ while [[ $# -gt 0 ]]; do
             NO_CHUNKED_PREFILL="true"
             shift
             ;;
+        --enforce-eager)
+            ENFORCE_EAGER="true"
+            shift
+            ;;
         -h|--help)
             show_usage
             exit 0
@@ -206,6 +212,7 @@ echo "[INFO]   Port: ${PORT}"
 echo "[INFO]   Log file: ${SERVER_LOG}"
 [[ -n "${TOKENIZER_MODE}" ]] && echo "[INFO]   Tokenizer mode: ${TOKENIZER_MODE}"
 [[ "${NO_CHUNKED_PREFILL}" == "true" ]] && echo "[INFO]   Chunked prefill: disabled"
+[[ "${ENFORCE_EAGER}" == "true" ]] && echo "[INFO]   Enforce eager: true"
 
 # Build speculative-config JSON:
 #   With external speculator (Eagle): include model + max_model_len fields
@@ -222,6 +229,7 @@ SPEC_CONFIG="${SPEC_CONFIG}}"
 EXTRA_FLAGS=()
 [[ -n "${TOKENIZER_MODE}" ]] && EXTRA_FLAGS+=(--tokenizer-mode "${TOKENIZER_MODE}")
 [[ "${NO_CHUNKED_PREFILL}" == "true" ]] && EXTRA_FLAGS+=(--no-enable-chunked-prefill)
+[[ "${ENFORCE_EAGER}" == "true" ]] && EXTRA_FLAGS+=(--enforce-eager)
 [[ -n "${MAX_NUM_BATCHED_TOKENS}" ]] && EXTRA_FLAGS+=(--max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}")
 [[ -n "${MAX_NUM_SEQS}" ]] && EXTRA_FLAGS+=(--max-num-seqs "${MAX_NUM_SEQS}")
 

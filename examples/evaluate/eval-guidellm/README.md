@@ -257,6 +257,9 @@ For each run, the script sets vLLM `--max-num-seqs` to the current
 batch/concurrency size and uses `MAX_NUM_BATCHED_TOKENS=8192` by default. That
 larger scheduler token budget is required for P-EAGLE at `NUM_SPEC_TOKENS=16`
 and `24`, where parallel drafting reserves additional draft-token slots.
+By default, it also sets `SPECLINK_BREAKDOWN_VERIFY_DETAIL=1`, which enables
+Qwen3 verifier-detail timing and passes `--enforce-eager` to vLLM for this
+experiment.
 
 ```bash
 conda run -n spec bash ./motivation_breakdown.sh
@@ -275,15 +278,22 @@ Outputs are written under `results/motivation_breakdown_TIMESTAMP/`:
 - `concise_summary.csv`: compact table with model, batch size,
   `NUM_SPEC_TOKENS`, decode-stage verify/draft/other percentages,
   generated tokens per decode iteration, and end-to-end mean latency
+- `verify_detail_summary.csv`: Qwen3 verifier-only QKV projection, Attention,
+  FFN, and verifier-other percentages and per-iteration times. Attention
+  includes q/k norm, RoPE, the attention kernel, and `o_proj`
 - `summary.csv`: one row per model/batch/K setting
 - `raw_events.csv`: per-iteration vLLM breakdown events
 - `acceptance.csv`: parsed speculative acceptance rates
 - `motivation_breakdown.xlsx`: Excel workbook with `concise_summary` as the
   first sheet, followed by the full raw tables
 - `motivation_breakdown.svg`: direct-labeled breakdown figure without a legend
+- `motivation_verify_breakdown.svg`: direct-labeled QKV/Attention/FFN verifier
+  breakdown figure without a legend
 
 The script marks a case successful only after GuideLLM writes
 `guidellm_results.json` and vLLM writes non-empty `breakdown_events.jsonl`.
+Set `SPECLINK_BREAKDOWN_VERIFY_DETAIL=0` to disable the Qwen3 verifier-detail
+instrumentation for throughput-only reruns.
 
 ## MTP (Built-in Head) Models
 
