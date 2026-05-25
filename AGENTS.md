@@ -81,12 +81,14 @@ The current local paths are:
 
 - EAGLE3: `/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-eagle3-speculator`
 - P-EAGLE: `/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-peagle-speculator`
+- Llama-3.1-8B EAGLE3: `/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/llama-3.1-8b-eagle3-speculator`
 
 To download the speculator checkpoints again:
 
 ```bash
 cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
 ./download_qwen3_8b_speculators.sh
+./download_llama_3_1_8b_eagle3_speculator.sh
 ```
 
 The base model is not copied into `../models` by default. Override it with
@@ -122,6 +124,12 @@ Current local vLLM changes in `speculators/vllm` are Python-only:
   `vllm/model_executor/models/qwen3.py` and
   `vllm/speclink_breakdown.py`, gated by
   `SPECLINK_BREAKDOWN_VERIFY_DETAIL=1`
+- confidence/acceptance tracing for the SpecLink first validation experiment in
+  `vllm/v1/spec_decode/llm_base_proposer.py`,
+  `vllm/v1/sample/rejection_sampler.py`,
+  `vllm/v1/worker/gpu_model_runner.py`, and
+  `vllm/speclink_confidence_trace.py`, gated by
+  `SPECLINK_TRACE_CONFIDENCE=1`
 
 Install or refresh vLLM from the repo root with editable mode. The current
 machine uses PyTorch `2.11.0+cu130`, so point the vLLM build at the conda
@@ -378,6 +386,182 @@ marks a run as `ok`.
 Set `SPECLINK_BREAKDOWN_VERIFY_DETAIL=0` to disable Qwen3 verify-detail
 instrumentation. The detail mode uses CUDA events inside Qwen3 verifier layers
 and is meant for breakdown analysis, not for clean throughput-only numbers.
+
+## Confidence Acceptance Experiment
+
+`run_speclink_confidence_acceptance.sh` implements Experiment 1 from
+`ExperimentTODO.md`: whether DLM draft-token confidence predicts TLM local
+acceptance. It does not implement chunked verification scheduling.
+
+The vLLM trace is off by default and is enabled only by:
+
+```bash
+SPECLINK_TRACE_CONFIDENCE=1
+SPECLINK_TRACE_OUTPUT=/path/to/trace.jsonl
+SPECLINK_TRACE_RUN_ID=qwen3_8b_eagle3_k4
+SPECLINK_TRACE_DATASET_LABEL=math
+SPECLINK_TRACE_MODEL_LABEL=qwen3_8b
+SPECLINK_TRACE_METHOD=eagle3
+SPECLINK_TRACE_NUM_SPEC_TOKENS=4
+```
+
+The hooks collect proposer logits in
+`vllm/v1/spec_decode/llm_base_proposer.py`, buffer per-request draft records in
+`vllm/speclink_confidence_trace.py`, and attach acceptance labels from
+`vllm/v1/sample/rejection_sampler.py`. Records are aligned by vLLM request id
+plus a per-request speculative-step counter. `dataset_label` separates math and
+MTBench, and `model_label` separates Qwen and Llama traces in combined
+analysis. `token_text` is left null to avoid tokenizer overhead in the hot path.
+
+Run from `examples/evaluate/eval-guidellm`:
+
+```bash
+cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
+conda run -n spec bash ./run_speclink_confidence_acceptance.sh
+```
+
+The default command is the one-click reproduction for the final four-row report:
+EAGLE3 `NUM_SPEC_TOKENS=8` on `{qwen3_8b,llama3_1_8b} x {math,mtbench}`. It
+runs the four individual cases under:
+
+```text
+temp/speclink_confidence_acceptance_reproduce_TIMESTAMP/
+```
+
+and writes only the combined final report under:
+
+```text
+results/speclink_confidence_acceptance_datasets_TIMESTAMP/
+```
+
+Defaults:
+
+- reproduction: EAGLE3 only, `REPRO_NUM_SPEC_TOKENS=8`,
+  `REPRO_PROMPTS=80`, `REPRO_MAX_TOKENS=128`, `temperature=0`
+- request concurrency defaults to `REPRO_REQUEST_CONCURRENCY=1`
+- vLLM is launched with `--enforce-eager` for trace stability
+- Qwen uses port `QWEN_PORT=8036`; Llama uses `LLAMA_PORT=8037`
+- use `--single-case` for the older configurable single-model/single-dataset
+  path
+
+MTBench setup:
+
+```bash
+cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
+conda run -n spec python ./prepare_mt_bench_dataset.py --force
+```
+
+This downloads the official FastChat MTBench `question.jsonl` and writes:
+
+```text
+data/mt_bench_raw.jsonl
+data/mt_bench.jsonl
+```
+
+The converted file has 80 rows. Multi-turn MTBench prompts are serialized as
+`User turn N:` blocks followed by `Assistant:` so the completions endpoint can
+be used consistently with the math dataset.
+
+Useful variants:
+
+```bash
+# Preview the four final cases without launching vLLM
+conda run -n spec bash ./run_speclink_confidence_acceptance.sh --dry-run
+
+# Regenerate parsed CSV, calibration, figures, and report for an existing final run
+conda run -n spec bash ./run_speclink_confidence_acceptance.sh \
+  --analyze-only ./results/speclink_confidence_acceptance_TIMESTAMP
+
+# Short main run for debugging
+SPECLINK_SINGLE_CASE=1 MAIN_PROMPTS=128 \
+conda run -n spec bash ./run_speclink_confidence_acceptance.sh --single-case --main-only
+
+# Smoke only for one configurable case, written under temp/
+conda run -n spec bash ./run_speclink_confidence_acceptance.sh --single-case --smoke-only
+
+# Llama-3.1-8B EAGLE3 K=8 only
+MODEL_LABEL=llama3_1_8b \
+BASE_MODEL=meta-llama/Llama-3.1-8B-Instruct \
+EAGLE3_SPECULATOR_MODEL=/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/llama-3.1-8b-eagle3-speculator \
+METHODS=eagle3 MAIN_NUM_SPEC_TOKENS=8 PORT=8035 \
+conda run -n spec bash ./run_speclink_confidence_acceptance.sh --single-case --main-only
+
+# Qwen3-8B MTBench, EAGLE3 K=8 only
+DATASET_LABEL=mtbench \
+DATASET=/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm/data/mt_bench.jsonl \
+MODEL_LABEL=qwen3_8b \
+BASE_MODEL=Qwen/Qwen3-8B \
+EAGLE3_SPECULATOR_MODEL=/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-eagle3-speculator \
+METHODS=eagle3 MAIN_NUM_SPEC_TOKENS=8 MAIN_PROMPTS=80 MAIN_MAX_TOKENS=128 \
+REQUEST_CONCURRENCY=1 PORT=8036 \
+conda run -n spec bash ./run_speclink_confidence_acceptance.sh --single-case --main-only
+
+# Llama-3.1-8B MTBench, EAGLE3 K=8 only
+DATASET_LABEL=mtbench \
+DATASET=/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm/data/mt_bench.jsonl \
+MODEL_LABEL=llama3_1_8b \
+BASE_MODEL=meta-llama/Llama-3.1-8B-Instruct \
+EAGLE3_SPECULATOR_MODEL=/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/llama-3.1-8b-eagle3-speculator \
+METHODS=eagle3 MAIN_NUM_SPEC_TOKENS=8 MAIN_PROMPTS=80 MAIN_MAX_TOKENS=128 \
+REQUEST_CONCURRENCY=1 PORT=8037 \
+conda run -n spec bash ./run_speclink_confidence_acceptance.sh --single-case --main-only
+
+# Combine archived/intermediate case roots into one K=8 report
+conda run -n spec python ./scripts/combine_speclink_confidence_results.py \
+  --output-root ./results/speclink_confidence_acceptance_datasets_TIMESTAMP \
+  --source qwen3_8b:math:./temp/speclink_confidence_acceptance_reproduce_TIMESTAMP/math_qwen3_8b_eagle3_k8 \
+  --source llama3_1_8b:math:./temp/speclink_confidence_acceptance_reproduce_TIMESTAMP/math_llama3_1_8b_eagle3_k8 \
+  --source qwen3_8b:mtbench:./temp/speclink_confidence_acceptance_reproduce_TIMESTAMP/mtbench_qwen3_8b_eagle3_k8 \
+  --source llama3_1_8b:mtbench:./temp/speclink_confidence_acceptance_reproduce_TIMESTAMP/mtbench_llama3_1_8b_eagle3_k8 \
+  --method eagle3 \
+  --num-spec-tokens 8 \
+  --analyze
+```
+
+Final outputs include:
+
+- `commands.sh`
+- `repro_report.md` for the default four-way combined report
+- per-case `env_report.md` files under the corresponding temp work root
+- `trace/DATASET_LABEL_MODEL_LABEL_METHOD_trace.jsonl`
+- `parsed/*_token_level.csv`, `parsed/*_sanity.md`
+- `calibration/*_calibrated.csv`, `calibration/*_summary.json`,
+  `calibration/*_model_params.json`
+- `figures/acceptance_by_position.png`, `confidence_bins.png`,
+  `calibration_curve.png`, `confidence_fit_curve.png`, `reliability.png`,
+  `reject_within_h.png`, `chunk_benefit.png`, plus the CSV data used to draw
+  each figure. `confidence_fit_curve.png` uses dataset/model facets for combined
+  K=8 reports so the actual-vs-fit curves remain readable without a legend.
+- `summary.csv`, `summary.json`, `report.md`
+
+The analysis script uses only installed lightweight dependencies:
+`numpy`, `pandas`, and `PIL`. The current `spec` env does not include
+`sklearn` or `matplotlib`, so logistic regression and calibration metrics are
+implemented locally in
+`scripts/analyze_speclink_confidence_acceptance.py`.
+
+Current combined K=8 confidence/acceptance result:
+
+```text
+results/speclink_confidence_acceptance_datasets_20260525_200725/
+```
+
+It contains only EAGLE3 `NUM_SPEC_TOKENS=8` rows for
+`{qwen3_8b,llama3_1_8b} x {math,mtbench}`. Key summary values:
+
+```text
+math/llama3_1_8b:    acceptance=0.5918, AUROC=0.8603, Spearman=0.6079
+math/qwen3_8b:       acceptance=0.6201, AUROC=0.8208, Spearman=0.5296
+mtbench/llama3_1_8b: acceptance=0.4787, AUROC=0.8218, Spearman=0.5573
+mtbench/qwen3_8b:    acceptance=0.5599, AUROC=0.8135, Spearman=0.5403
+```
+
+Older confidence/acceptance case roots from the same development pass were
+moved out of `results/` to:
+
+```text
+temp/moved_from_results_20260525_203200/
+```
 
 ## Current Run Notes
 

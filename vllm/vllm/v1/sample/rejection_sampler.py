@@ -11,6 +11,9 @@ import torch
 import torch.nn as nn
 
 from vllm.logger import init_logger
+from vllm.speclink_confidence_trace import (
+    label_verified_tokens as speclink_trace_label_verified_tokens,
+)
 from vllm.triton_utils import tl, triton
 from vllm.v1.outputs import LogprobsLists, LogprobsTensors, SamplerOutput
 from vllm.v1.sample.logits_processor.builtin import MinTokensLogitsProcessor
@@ -176,6 +179,11 @@ class RejectionSampler(nn.Module):
             sampling_metadata,
             synthetic_mode=self.synthetic_mode,
             synthetic_conditional_rates=self.synthetic_conditional_rates,
+        )
+        speclink_trace_label_verified_tokens(
+            metadata=metadata,
+            output_token_ids=output_token_ids,
+            target_logits=target_logits,
         )
 
         logprobs_tensors = None

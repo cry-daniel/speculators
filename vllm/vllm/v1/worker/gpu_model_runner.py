@@ -111,6 +111,12 @@ from vllm.speclink_breakdown import (
     end_verify_detail,
     snapshot_verify_detail,
 )
+from vllm.speclink_confidence_trace import (
+    begin_propose_context as speclink_trace_begin_propose_context,
+    begin_verify_context as speclink_trace_begin_verify_context,
+    end_propose_context as speclink_trace_end_propose_context,
+    end_verify_context as speclink_trace_end_verify_context,
+)
 from vllm.tasks import GenerationTask, PoolingTask, SupportedTask
 from vllm.tracing import instrument
 from vllm.utils import length_from_prompt_token_ids_or_embeds
@@ -4350,8 +4356,20 @@ class GPUModelRunner(
 
         _speclink_breakdown_sync()
         speclink_accept_start = _speclink_breakdown_now()
-        with record_function_or_nullcontext("gpu_model_runner: sample"):
-            sampler_output = self._sample(logits, spec_decode_metadata)
+        speclink_trace_verify_token = speclink_trace_begin_verify_context(
+            req_ids=self.input_batch.req_ids.copy(),
+            active_requests=self.input_batch.num_reqs,
+            batch_size=self.input_batch.num_reqs,
+            num_spec_tokens=self.num_spec_tokens or 0,
+            method=self.speculative_config.method
+            if self.speculative_config is not None
+            else "",
+        )
+        try:
+            with record_function_or_nullcontext("gpu_model_runner: sample"):
+                sampler_output = self._sample(logits, spec_decode_metadata)
+        finally:
+            speclink_trace_end_verify_context(speclink_trace_verify_token)
         _speclink_breakdown_sync()
         if speclink_breakdown_event is not None:
             speclink_accept_reject_ms = _speclink_elapsed_ms(speclink_accept_start)
@@ -4834,6 +4852,7 @@ class GPUModelRunner(
                 self.drafter, EagleProposer | DFlashProposer | DraftModelProposer
             )
 
+            valid_sampled_tokens_count = None
             if spec_config.disable_padded_drafter_batch:
                 # When padded-batch is disabled, the sampled_token_ids should be
                 # the cpu-side list[list[int]] of valid sampled tokens for each
@@ -4939,18 +4958,53 @@ class GPUModelRunner(
             else:
                 mm_embed_inputs = None
 
-            draft_token_ids = self.drafter.propose(
-                target_token_ids=target_token_ids,
-                target_positions=target_positions,
-                target_hidden_states=target_hidden_states,
-                next_token_ids=next_token_ids,
-                token_indices_to_sample=token_indices_to_sample,
-                sampling_metadata=sampling_metadata,
-                common_attn_metadata=common_attn_metadata,
-                mm_embed_inputs=mm_embed_inputs,
-                num_rejected_tokens_gpu=num_rejected_tokens_gpu,
-                slot_mappings=slot_mappings,
-            )
+            trace_token = None
+            try:
+                req_ids = self.input_batch.req_ids.copy()
+                num_reqs = self.input_batch.num_reqs
+                prompt_lens = [
+                    int(self.input_batch.num_prompt_tokens[i])
+                    for i in range(num_reqs)
+                ]
+                if valid_sampled_tokens_count is not None:
+                    sampled_counts = (
+                        valid_sampled_tokens_count[:num_reqs]
+                        .detach()
+                        .cpu()
+                        .tolist()
+                    )
+                elif isinstance(sampled_token_ids, list):
+                    sampled_counts = [len(ids) for ids in sampled_token_ids[:num_reqs]]
+                else:
+                    sampled_counts = [0] * num_reqs
+                generated_lens = [
+                    len(self.requests[req_id].output_token_ids)
+                    + int(sampled_counts[i])
+                    for i, req_id in enumerate(req_ids[:num_reqs])
+                ]
+                trace_token = speclink_trace_begin_propose_context(
+                    req_ids=req_ids,
+                    prompt_lens=prompt_lens,
+                    generated_lens=generated_lens,
+                    active_requests=num_reqs,
+                    batch_size=num_reqs,
+                    num_spec_tokens=self.num_spec_tokens or 0,
+                    method=spec_config.method,
+                )
+                draft_token_ids = self.drafter.propose(
+                    target_token_ids=target_token_ids,
+                    target_positions=target_positions,
+                    target_hidden_states=target_hidden_states,
+                    next_token_ids=next_token_ids,
+                    token_indices_to_sample=token_indices_to_sample,
+                    sampling_metadata=sampling_metadata,
+                    common_attn_metadata=common_attn_metadata,
+                    mm_embed_inputs=mm_embed_inputs,
+                    num_rejected_tokens_gpu=num_rejected_tokens_gpu,
+                    slot_mappings=slot_mappings,
+                )
+            finally:
+                speclink_trace_end_propose_context(trace_token)
 
         return draft_token_ids
 

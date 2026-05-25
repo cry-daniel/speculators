@@ -26,6 +26,10 @@ from vllm.model_executor.models.llama_eagle3 import Eagle3LlamaForCausalLM
 from vllm.model_executor.models.qwen3_dflash import DFlashQwen3ForCausalLM
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.platforms import current_platform
+from vllm.speclink_confidence_trace import (
+    enabled as speclink_trace_enabled,
+    record_draft_features as speclink_trace_record_draft_features,
+)
 from vllm.utils.platform_utils import is_pin_memory_available
 from vllm.v1.attention.backend import CommonAttentionMetadata
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
@@ -487,9 +491,29 @@ class SpecDecodeBaseProposer:
                 last_hidden_states, hidden_states = ret_hidden_states
 
         sample_hidden_states = last_hidden_states[token_indices_to_sample]
+        trace_confidence = speclink_trace_enabled()
 
         # Early exit if there is only one draft token to be generated.
         if self.num_speculative_tokens == 1 or self.parallel_drafting:
+            if trace_confidence:
+                logits = self.model.compute_logits(sample_hidden_states)
+                if self.use_local_argmax_reduction:
+                    draft_token_ids = self.model.get_top_tokens(sample_hidden_states)
+                else:
+                    draft_token_ids = logits.argmax(dim=-1)
+                draft_token_ids = draft_token_ids.view(-1, self.num_speculative_tokens)
+                logits = logits.reshape(
+                    -1, self.num_speculative_tokens, logits.shape[-1]
+                )
+                speclink_trace_record_draft_features(
+                    draft_token_ids=draft_token_ids,
+                    logits_by_position=[
+                        logits[:, i, :] for i in range(self.num_speculative_tokens)
+                    ],
+                    temperature=sampling_metadata.temperature,
+                    method=self.method,
+                )
+                return draft_token_ids
             draft_token_ids = self._greedy_sample(sample_hidden_states)
             return draft_token_ids.view(-1, self.num_speculative_tokens)
 
@@ -513,7 +537,16 @@ class SpecDecodeBaseProposer:
             # [batch_size, num_tree_tokens]
             return torch.cat(draft_token_ids_list, dim=1)
 
-        draft_token_ids = self._greedy_sample(sample_hidden_states)
+        draft_logits_by_position: list[torch.Tensor] = []
+        if trace_confidence:
+            logits = self.model.compute_logits(sample_hidden_states)
+            draft_logits_by_position.append(logits)
+            if self.use_local_argmax_reduction:
+                draft_token_ids = self.model.get_top_tokens(sample_hidden_states)
+            else:
+                draft_token_ids = logits.argmax(dim=-1)
+        else:
+            draft_token_ids = self._greedy_sample(sample_hidden_states)
 
         if self.allowed_attn_types is not None:
             for group_md in per_group_attn_metadata:
@@ -647,11 +680,28 @@ class SpecDecodeBaseProposer:
                     last_hidden_states, hidden_states = ret_hidden_states
 
             hidden_states = hidden_states[:batch_size]
-            draft_token_ids = self._greedy_sample(last_hidden_states[:batch_size])
+            if trace_confidence:
+                logits = self.model.compute_logits(last_hidden_states[:batch_size])
+                draft_logits_by_position.append(logits)
+                if self.use_local_argmax_reduction:
+                    draft_token_ids = self.model.get_top_tokens(
+                        last_hidden_states[:batch_size]
+                    )
+                else:
+                    draft_token_ids = logits.argmax(dim=-1)
+            else:
+                draft_token_ids = self._greedy_sample(last_hidden_states[:batch_size])
             draft_token_ids_list.append(draft_token_ids)
 
         # [batch_size, num_speculative_tokens]
         draft_token_ids = torch.stack(draft_token_ids_list, dim=1)
+        if trace_confidence:
+            speclink_trace_record_draft_features(
+                draft_token_ids=draft_token_ids,
+                logits_by_position=draft_logits_by_position,
+                temperature=sampling_metadata.temperature,
+                method=self.method,
+            )
         return draft_token_ids
 
     def set_inputs_first_pass(
