@@ -12,6 +12,9 @@ from contextlib import contextmanager
 from copy import copy, deepcopy
 from dataclasses import dataclass, replace
 from functools import reduce
+import json
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, TypeAlias, cast
 
 import numpy as np
@@ -389,6 +392,110 @@ class ExecuteModelState(NamedTuple):
     ec_connector_output: ECConnectorOutput | None
     cudagraph_stats: CUDAGraphStat | None
     slot_mappings: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None
+
+# SPECLINK_MOTIVATION_BREAKDOWN_PATCH_BEGIN
+def _speclink_breakdown_enabled() -> bool:
+    return os.getenv("SPECLINK_BREAKDOWN", "0") == "1"
+
+
+def _speclink_breakdown_now() -> float:
+    return time.perf_counter()
+
+
+def _speclink_breakdown_sync() -> None:
+    if not _speclink_breakdown_enabled():
+        return
+    if os.getenv("SPECLINK_BREAKDOWN_SYNC", "1") != "1":
+        return
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+
+
+def _speclink_elapsed_ms(start: float) -> float:
+    return (time.perf_counter() - start) * 1000.0
+
+
+def _speclink_int_env(name: str) -> int | None:
+    value = os.getenv(name, "")
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _speclink_make_breakdown_event(
+    runner: Any,
+    *,
+    phase: str,
+    active_requests: int,
+    scheduled_tokens: int,
+    max_scheduled_tokens: int,
+    num_tokens_unpadded: int,
+    num_tokens_padded: int,
+    use_spec_decode: bool,
+) -> dict[str, Any] | None:
+    if not _speclink_breakdown_enabled():
+        return None
+    spec_config = getattr(runner, "speculative_config", None)
+    return {
+        "_start_perf": time.perf_counter(),
+        "ts": time.time(),
+        "algo": os.getenv("SPECLINK_BREAKDOWN_ALGO", "unknown"),
+        "batch_size": _speclink_int_env("SPECLINK_BREAKDOWN_BATCH_SIZE"),
+        "num_spec_tokens": _speclink_int_env("SPECLINK_BREAKDOWN_NUM_SPEC_TOKENS")
+        or getattr(runner, "num_spec_tokens", None),
+        "spec_method": getattr(spec_config, "method", None),
+        "phase": phase,
+        "active_requests": int(active_requests),
+        "scheduled_tokens": int(scheduled_tokens),
+        "max_scheduled_tokens": int(max_scheduled_tokens),
+        "num_tokens_unpadded": int(num_tokens_unpadded),
+        "num_tokens_padded": int(num_tokens_padded),
+        "use_spec_decode": bool(use_spec_decode),
+    }
+
+
+def _speclink_write_breakdown_event(event: dict[str, Any]) -> None:
+    output = os.getenv("SPECLINK_BREAKDOWN_OUT", "")
+    if not output:
+        return
+    try:
+        Path(output).parent.mkdir(parents=True, exist_ok=True)
+        with open(output, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, sort_keys=True) + "\n")
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to write SPECLINK breakdown event to %s", output)
+
+
+def _speclink_finish_breakdown_event(
+    event: dict[str, Any] | None,
+    *,
+    accept_reject_ms: float,
+    draft_forward_ms: float,
+    num_draft_tokens: int | None,
+) -> None:
+    if event is None:
+        return
+    start = event.pop("_start_perf", None)
+    total_ms = _speclink_elapsed_ms(start) if start is not None else None
+    verify_ms = float(event.get("verify_forward_ms") or 0.0)
+    event["accept_reject_ms"] = float(accept_reject_ms)
+    event["draft_forward_ms"] = float(draft_forward_ms)
+    event["num_draft_tokens"] = num_draft_tokens
+    if total_ms is not None:
+        event["measured_total_ms"] = total_ms
+        event["other_ms"] = max(
+            0.0, total_ms - verify_ms - accept_reject_ms - draft_forward_ms
+        )
+    else:
+        event["measured_total_ms"] = None
+        event["other_ms"] = None
+    _speclink_write_breakdown_event(event)
+
+
+# SPECLINK_MOTIVATION_BREAKDOWN_PATCH_END
 
 
 class GPUModelRunner(
@@ -3222,6 +3329,8 @@ class GPUModelRunner(
         ECConnectorOutput | None,
     ]:
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
+        if _speclink_breakdown_enabled():
+            self._speclink_breakdown_event = None
         is_first_rank = get_pp_group().is_first_rank
         is_encoder_decoder = self.model_config.is_encoder_decoder
 
@@ -4030,6 +4139,19 @@ class GPUModelRunner(
         # When spec decode is enabled, defer connector finalization
         # (wait_for_save + clear metadata) until after draft model runs.
         defer_kv_connector_finalize = self.speculative_config is not None
+        phase = "decode" if use_spec_decode or max_num_scheduled_tokens <= 1 else "prefill"
+        speclink_breakdown_event = _speclink_make_breakdown_event(
+            self,
+            phase=phase,
+            active_requests=num_reqs,
+            scheduled_tokens=num_scheduled_tokens,
+            max_scheduled_tokens=max_num_scheduled_tokens,
+            num_tokens_unpadded=num_tokens_unpadded,
+            num_tokens_padded=num_tokens_padded,
+            use_spec_decode=use_spec_decode,
+        )
+        _speclink_breakdown_sync()
+        speclink_verify_start = _speclink_breakdown_now()
         with (
             set_forward_context(
                 attn_metadata,
@@ -4115,6 +4237,13 @@ class GPUModelRunner(
                 assert broadcasted is not None
                 logits = broadcasted["logits"]
 
+        _speclink_breakdown_sync()
+        if speclink_breakdown_event is not None:
+            speclink_breakdown_event["verify_forward_ms"] = _speclink_elapsed_ms(
+                speclink_verify_start
+            )
+            self._speclink_breakdown_event = speclink_breakdown_event
+
         self.execute_model_state = ExecuteModelState(
             scheduler_output,
             logits,
@@ -4174,14 +4303,28 @@ class GPUModelRunner(
         # Clear ephemeral state.
         self.execute_model_state = None
 
+        speclink_breakdown_event = getattr(
+            self, "_speclink_breakdown_event", None
+        )
+        if speclink_breakdown_event is not None:
+            self._speclink_breakdown_event = None
+        speclink_accept_reject_ms = 0.0
+        speclink_draft_forward_ms = 0.0
+        speclink_num_draft_tokens = None
+
         # Apply structured output bitmasks if present.
         if grammar_output is not None:
             apply_grammar_bitmask(
                 scheduler_output, grammar_output, self.input_batch, logits
             )
 
+        _speclink_breakdown_sync()
+        speclink_accept_start = _speclink_breakdown_now()
         with record_function_or_nullcontext("gpu_model_runner: sample"):
             sampler_output = self._sample(logits, spec_decode_metadata)
+        _speclink_breakdown_sync()
+        if speclink_breakdown_event is not None:
+            speclink_accept_reject_ms = _speclink_elapsed_ms(speclink_accept_start)
 
         self._update_states_after_model_execute(
             sampler_output.sampled_token_ids, scheduler_output
@@ -4202,7 +4345,10 @@ class GPUModelRunner(
         self.input_batch.prev_sampled_token_ids = None
 
         def propose_draft_token_ids(sampled_token_ids):
+            nonlocal speclink_draft_forward_ms, speclink_num_draft_tokens
             assert spec_decode_common_attn_metadata is not None
+            _speclink_breakdown_sync()
+            speclink_draft_start = _speclink_breakdown_now()
             with record_function_or_nullcontext("gpu_model_runner: draft"):
                 self._draft_token_ids = self.propose_draft_token_ids(
                     scheduler_output,
@@ -4216,6 +4362,20 @@ class GPUModelRunner(
                     slot_mappings,
                 )
                 self._copy_draft_token_ids_to_cpu(scheduler_output)
+            _speclink_breakdown_sync()
+            if speclink_breakdown_event is not None:
+                speclink_draft_forward_ms += _speclink_elapsed_ms(
+                    speclink_draft_start
+                )
+                try:
+                    if hasattr(self._draft_token_ids, "numel"):
+                        speclink_num_draft_tokens = int(self._draft_token_ids.numel())
+                    elif self._draft_token_ids is not None:
+                        speclink_num_draft_tokens = sum(
+                            len(ids) for ids in self._draft_token_ids
+                        )
+                except Exception:  # noqa: BLE001
+                    speclink_num_draft_tokens = None
 
         spec_config = self.speculative_config
         propose_drafts_after_bookkeeping = False
@@ -4348,6 +4508,13 @@ class GPUModelRunner(
                 num_nans_in_logits=num_nans_in_logits,
                 cudagraph_stats=cudagraph_stats,
             )
+
+        _speclink_finish_breakdown_event(
+            speclink_breakdown_event,
+            accept_reject_ms=speclink_accept_reject_ms,
+            draft_forward_ms=speclink_draft_forward_ms,
+            num_draft_tokens=speclink_num_draft_tokens,
+        )
 
         if not self.use_async_scheduling:
             return output

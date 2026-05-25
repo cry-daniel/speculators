@@ -241,6 +241,50 @@ To compare against the published Qwen3-8B EAGLE3 baseline with the same dataset 
 
 The comparison script writes `eagle3/` and `peagle/` subdirectories under one timestamped output root.
 
+## Motivation Breakdown
+
+Use `motivation_breakdown.sh` to compare EAGLE3 and P-EAGLE on a synthetic
+1000-token prompt / 1000-token output workload across batch/concurrency sizes
+`1 2 4 8 16` and `NUM_SPEC_TOKENS=8 16 24`.
+
+The script expects the vendored vLLM source at the repository root
+`vllm/` to already be installed editable into the `spec` environment. It only
+verifies that `import vllm` resolves to
+`/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/vllm/vllm/` before
+starting the matrix.
+
+For each run, the script sets vLLM `--max-num-seqs` to the current
+batch/concurrency size and uses `MAX_NUM_BATCHED_TOKENS=8192` by default. That
+larger scheduler token budget is required for P-EAGLE at `NUM_SPEC_TOKENS=16`
+and `24`, where parallel drafting reserves additional draft-token slots.
+
+```bash
+conda run -n spec bash ./motivation_breakdown.sh
+```
+
+For a small smoke run:
+
+```bash
+ALGOS=eagle3 BATCH_SIZES=1 NUM_SPEC_TOKENS_LIST=8 REQUESTS_PER_RUN=2 \
+  conda run -n spec bash ./motivation_breakdown.sh
+```
+
+Outputs are written under `results/motivation_breakdown_TIMESTAMP/`:
+
+- `status.tsv`: quick pass/fail status for each run
+- `concise_summary.csv`: compact table with model, batch size,
+  `NUM_SPEC_TOKENS`, decode-stage verify/draft/other percentages,
+  generated tokens per decode iteration, and end-to-end mean latency
+- `summary.csv`: one row per model/batch/K setting
+- `raw_events.csv`: per-iteration vLLM breakdown events
+- `acceptance.csv`: parsed speculative acceptance rates
+- `motivation_breakdown.xlsx`: Excel workbook with `concise_summary` as the
+  first sheet, followed by the full raw tables
+- `motivation_breakdown.svg`: direct-labeled breakdown figure without a legend
+
+The script marks a case successful only after GuideLLM writes
+`guidellm_results.json` and vLLM writes non-empty `breakdown_events.jsonl`.
+
 ## MTP (Built-in Head) Models
 
 Some models ship with a speculative head baked directly into the model checkpoint — there is no separate speculator to load. Qwen3-Next is one example: its MTP head is part of the verifier weights and driven by vLLM's native `--speculative-config '{"method": "mtp", ...}'`. See the Configuration Options table for the relevant settings (`METHOD`, `TOKENIZER_MODE`, `NO_CHUNKED_PREFILL`).

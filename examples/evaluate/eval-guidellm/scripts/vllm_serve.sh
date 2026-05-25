@@ -19,6 +19,8 @@ PARALLEL_DRAFTING=""
 TENSOR_PARALLEL_SIZE=""
 MAX_MODEL_LEN=""
 GPU_MEMORY_UTILIZATION=""
+MAX_NUM_BATCHED_TOKENS=""
+MAX_NUM_SEQS=""
 PORT=""
 HEALTH_CHECK_TIMEOUT=""
 SERVER_LOG=""
@@ -48,6 +50,8 @@ Optional:
   --tensor-parallel-size SIZE    Number of GPUs (default: 1)
   --max-model-len LENGTH         Max model length (default: 24000)
   --gpu-memory-utilization UTIL  GPU memory fraction (default: 0.85)
+  --max-num-batched-tokens N     vLLM scheduler token budget
+  --max-num-seqs N               vLLM scheduler sequence budget
   --port PORT                    Server port (default: 8000)
   --health-check-timeout SECS    Health check timeout (default: 300)
   --log-file FILE                Log file path (default: vllm_server.log)
@@ -106,6 +110,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --gpu-memory-utilization)
             GPU_MEMORY_UTILIZATION="$2"
+            shift 2
+            ;;
+        --max-num-batched-tokens)
+            MAX_NUM_BATCHED_TOKENS="$2"
+            shift 2
+            ;;
+        --max-num-seqs)
+            MAX_NUM_SEQS="$2"
             shift 2
             ;;
         --port)
@@ -188,6 +200,8 @@ echo "[INFO]   Parallel drafting: ${PARALLEL_DRAFTING}"
 echo "[INFO]   Tensor parallel size: ${TENSOR_PARALLEL_SIZE}"
 echo "[INFO]   Max model length: ${MAX_MODEL_LEN}"
 echo "[INFO]   GPU memory utilization: ${GPU_MEMORY_UTILIZATION}"
+[[ -n "${MAX_NUM_BATCHED_TOKENS}" ]] && echo "[INFO]   Max num batched tokens: ${MAX_NUM_BATCHED_TOKENS}"
+[[ -n "${MAX_NUM_SEQS}" ]] && echo "[INFO]   Max num seqs: ${MAX_NUM_SEQS}"
 echo "[INFO]   Port: ${PORT}"
 echo "[INFO]   Log file: ${SERVER_LOG}"
 [[ -n "${TOKENIZER_MODE}" ]] && echo "[INFO]   Tokenizer mode: ${TOKENIZER_MODE}"
@@ -208,6 +222,8 @@ SPEC_CONFIG="${SPEC_CONFIG}}"
 EXTRA_FLAGS=()
 [[ -n "${TOKENIZER_MODE}" ]] && EXTRA_FLAGS+=(--tokenizer-mode "${TOKENIZER_MODE}")
 [[ "${NO_CHUNKED_PREFILL}" == "true" ]] && EXTRA_FLAGS+=(--no-enable-chunked-prefill)
+[[ -n "${MAX_NUM_BATCHED_TOKENS}" ]] && EXTRA_FLAGS+=(--max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}")
+[[ -n "${MAX_NUM_SEQS}" ]] && EXTRA_FLAGS+=(--max-num-seqs "${MAX_NUM_SEQS}")
 
 # Fail fast if the port is already in use rather than burying the error in vLLM logs
 if ss -tlnp 2>/dev/null | grep -q ":${PORT} " || nc -z 127.0.0.1 "${PORT}" 2>/dev/null; then

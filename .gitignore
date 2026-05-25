@@ -181,5 +181,7 @@ doc
 
 # Local generated speculator model variants
 examples/evaluate/eval-guidellm/models/
+examples/evaluate/eval-guidellm/results/
+examples/evaluate/eval-guidellm/temp/
 
 speclink.md

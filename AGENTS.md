@@ -14,19 +14,52 @@ conda activate spec
 Known working environment:
 
 - Python: `/ACALAB/stu1/miniconda3/envs/spec/bin/python`
-- vLLM: `0.20.0`
+- vLLM: `0.20.0`, installed editable from this repo's `vllm/`
 - GuideLLM: `0.6.0`
 - Torch: `2.11.0+cu130`
 - Local package: this repo installed editable into `spec`
 
-If recreating the environment, use Python 3.12 and install vLLM, GuideLLM,
-Hugging Face Hub, then install this repo editable:
+If recreating the environment, use Python 3.12, install GuideLLM and Hugging
+Face Hub, then install this repo and the vendored vLLM editable. Keep vLLM's
+CUDA build aligned with PyTorch's CUDA 13.0 stack; do not build it with a newer
+system CUDA such as `/usr/local/cuda-13.2`, because that can produce PTX the
+current driver cannot run.
 
 ```bash
 conda create -n spec python=3.12
 conda activate spec
-pip install vllm guidellm huggingface-hub
+pip install guidellm huggingface-hub
 pip install -e /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators --no-deps
+pip install -r /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/vllm/requirements/build/cuda.txt
+pip install \
+  nvidia-cuda-nvcc==13.0.88 \
+  nvidia-nvvm==13.0.88 \
+  nvidia-cuda-crt==13.0.88 \
+  nvidia-cuda-cccl==13.0.85
+conda install -n spec -y -c conda-forge gcc_linux-64=13 gxx_linux-64=13
+
+cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators
+CU13=/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/nvidia/cu13
+ln -sfn lib "${CU13}/lib64"
+ln -sfn libcudart.so.13 "${CU13}/lib/libcudart.so"
+ln -sfn libnvJitLink.so.13 "${CU13}/lib/libnvJitLink.so"
+ln -sfn libnvrtc.so.13 "${CU13}/lib/libnvrtc.so"
+ln -sfn libnvvm.so.4 "${CU13}/lib/libnvvm.so"
+mkdir -p "${CU13}/lib/stubs"
+ln -sfn /usr/lib/x86_64-linux-gnu/libcuda.so.1 "${CU13}/lib/stubs/libcuda.so"
+
+CUDA_HOME="${CU13}" \
+CUDACXX="${CU13}/bin/nvcc" \
+CUDAHOSTCXX=/ACALAB/stu1/miniconda3/envs/spec/bin/x86_64-conda-linux-gnu-g++ \
+CC=/ACALAB/stu1/miniconda3/envs/spec/bin/x86_64-conda-linux-gnu-gcc \
+CXX=/ACALAB/stu1/miniconda3/envs/spec/bin/x86_64-conda-linux-gnu-g++ \
+PATH="${CU13}/bin:${PATH}" \
+LD_LIBRARY_PATH="${CU13}/lib:${LD_LIBRARY_PATH:-}" \
+TORCH_CUDA_ARCH_LIST=12.0 \
+MAX_JOBS=8 \
+NVCC_THREADS=2 \
+SETUPTOOLS_SCM_PRETEND_VERSION=0.20.0 \
+  pip install -e ./vllm --no-deps --no-build-isolation --force-reinstall
 ```
 
 GPU commands must run with real GPU access. In Codex sandboxed commands,
@@ -60,33 +93,116 @@ The base model is not copied into `../models` by default. Override it with
 `QWEN3_8B_MODEL=/path/to/local/qwen3-8b` only if you want to force a specific
 local base model directory.
 
-## P-EAGLE vLLM Compatibility
+## Vendored vLLM Source and Install
 
-The `spec` environment's vLLM package has a local Python compatibility patch for
-P-EAGLE speculators. It adds:
+vLLM is vendored as a full source tree inside this repository:
 
-- `peagle` to `vllm.transformers_utils.configs.speculators.algos.SUPPORTED_SPECULATORS_TYPES`
+```text
+/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/vllm
+```
+
+This tree was imported from upstream vLLM `v0.20.0` and pushed to `main` in
+commit `9def519`. Future vLLM edits for these experiments should be made in
+`speculators/vllm`, not in `site-packages` and not in the older external
+`/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/vllm` checkout.
+
+Current local vLLM changes in `speculators/vllm` are Python-only:
+
+- `peagle` support in
+  `vllm/transformers_utils/configs/speculators/algos.py`
 - conversion from `speculators_model_type=peagle` to `method=eagle3` with
-  `parallel_drafting=true`
-- PEAGLE config fields required by the existing EAGLE3 parallel drafting path:
-  `pard_token`, `draft_vocab_size`, `norm_before_residual`,
-  `norm_before_fc`, and `eagle_aux_hidden_state_layer_ids`
+  `parallel_drafting=true` in
+  `vllm/transformers_utils/configs/speculators/base.py`
+- motivation-breakdown instrumentation in
+  `vllm/v1/worker/gpu_model_runner.py`, gated by
+  `SPECLINK_BREAKDOWN=1`, `SPECLINK_BREAKDOWN_OUT`,
+  `SPECLINK_BREAKDOWN_ALGO`, `SPECLINK_BREAKDOWN_BATCH_SIZE`, and
+  `SPECLINK_BREAKDOWN_NUM_SPEC_TOKENS`
 
-The patch lives in the installed vLLM package under:
+Install or refresh vLLM from the repo root with editable mode. The current
+machine uses PyTorch `2.11.0+cu130`, so point the vLLM build at the conda
+environment's CUDA 13.0 compiler stack instead of the system CUDA:
 
-```text
-/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm/transformers_utils/configs/speculators/
+```bash
+cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators
+conda run -n spec python -m pip install -r vllm/requirements/build/cuda.txt
+conda run -n spec python -m pip install \
+  nvidia-cuda-nvcc==13.0.88 \
+  nvidia-nvvm==13.0.88 \
+  nvidia-cuda-crt==13.0.88 \
+  nvidia-cuda-cccl==13.0.85
+conda install -n spec -y -c conda-forge gcc_linux-64=13 gxx_linux-64=13
+
+CU13=/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/nvidia/cu13
+ln -sfn lib "${CU13}/lib64"
+ln -sfn libcudart.so.13 "${CU13}/lib/libcudart.so"
+ln -sfn libnvJitLink.so.13 "${CU13}/lib/libnvJitLink.so"
+ln -sfn libnvrtc.so.13 "${CU13}/lib/libnvrtc.so"
+ln -sfn libnvvm.so.4 "${CU13}/lib/libnvvm.so"
+mkdir -p "${CU13}/lib/stubs"
+ln -sfn /usr/lib/x86_64-linux-gnu/libcuda.so.1 "${CU13}/lib/stubs/libcuda.so"
+
+CUDA_HOME="${CU13}" \
+CUDACXX="${CU13}/bin/nvcc" \
+CUDAHOSTCXX=/ACALAB/stu1/miniconda3/envs/spec/bin/x86_64-conda-linux-gnu-g++ \
+CC=/ACALAB/stu1/miniconda3/envs/spec/bin/x86_64-conda-linux-gnu-gcc \
+CXX=/ACALAB/stu1/miniconda3/envs/spec/bin/x86_64-conda-linux-gnu-g++ \
+PATH="${CU13}/bin:${PATH}" \
+LD_LIBRARY_PATH="${CU13}/lib:${LD_LIBRARY_PATH:-}" \
+TORCH_CUDA_ARCH_LIST=12.0 \
+MAX_JOBS=8 \
+NVCC_THREADS=2 \
+SETUPTOOLS_SCM_PRETEND_VERSION=0.20.0 \
+  conda run -n spec python -m pip install -e ./vllm --no-deps --no-build-isolation --force-reinstall
 ```
 
-Original backups were saved as:
+`pip install -e` is the modern replacement for `setup.py develop`. Python edits
+under `speculators/vllm/vllm/` take effect on the next process start. C++/CUDA
+extension edits still require rerunning the editable install, but CMake/Ninja
+can reuse existing build artifacts if `vllm/.deps` and the build cache are kept.
 
-```text
-algos.py.bak-peagle
-base.py.bak-peagle
+Verify from a directory other than the speculators repo root, for example:
+
+```bash
+cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
+conda run -n spec python -c "import pathlib, vllm; print(pathlib.Path(vllm.__file__).resolve())"
+conda run -n spec vllm --help
 ```
 
-If vLLM is reinstalled, reapply this compatibility patch or switch to a vLLM
-build that already supports `peagle`.
+Expected import path prefix:
+
+```text
+/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/vllm/vllm/
+```
+
+Do not use `VLLM_USE_PRECOMPILED=1` for this workflow. The point of the local
+source install is that future edits to `speculators/vllm` are the code being
+run. Also avoid launching Python from the speculators repo root when checking
+`import vllm`: the root contains a `vllm/` source directory and can shadow the
+editable package as a namespace package. The motivation breakdown script changes
+into `examples/evaluate/eval-guidellm` before validating the import path.
+
+Older runs left direct-edit residue under:
+
+```text
+/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm/
+```
+
+That directory should not exist after the editable install. If it reappears and
+`vllm.__file__` is `None` or imports resolve to `site-packages/vllm`, move the
+stale directory out of the conda environment and rerun the verification above.
+
+If the install fails after moving a partially built `vllm/.deps` directory and
+CMake reports an old path in `CMakeCache.txt`, remove only generated build
+subdirectories and retry:
+
+```bash
+find vllm/.deps -maxdepth 1 -type d \( -name '*-subbuild' -o -name '*-build' \) -exec rm -rf {} +
+CU13=/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/nvidia/cu13
+CUDA_HOME="${CU13}" CUDACXX="${CU13}/bin/nvcc" TORCH_CUDA_ARCH_LIST=12.0 \
+MAX_JOBS=8 NVCC_THREADS=2 SETUPTOOLS_SCM_PRETEND_VERSION=0.20.0 \
+  conda run -n spec python -m pip install -e ./vllm --no-deps --no-build-isolation --force-reinstall
+```
 
 Expected PEAGLE config parse:
 
@@ -200,6 +316,55 @@ Expected output files in each output directory:
 - `guidellm_results.json`
 - `acceptance_analysis.txt`
 
+## Motivation Breakdown
+
+`motivation_breakdown.sh` runs the synthetic 1000-token prompt / 1000-token
+output experiment requested for EAGLE3 and P-EAGLE:
+
+- `batch_size=1 2 4 8 16`
+- `NUM_SPEC_TOKENS=8 16 24`
+- default `REQUESTS_PER_RUN=32`
+- default `WARMUP_REQUESTS=4`
+- default `MAX_NUM_BATCHED_TOKENS=8192`
+- vLLM `--max-num-seqs` is set to the current batch/concurrency size
+
+Run it from `examples/evaluate/eval-guidellm`:
+
+```bash
+cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
+conda run -n spec bash ./motivation_breakdown.sh
+```
+
+The script no longer accepts `--vllm-dir`, `--skip-vllm-setup`, or
+`--setup-only`; vLLM is expected to already be installed editable from
+`speculators/vllm`. At startup it verifies that `import vllm` resolves under:
+
+```text
+/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/vllm/vllm/
+```
+
+Outputs are written under `results/motivation_breakdown_TIMESTAMP/`, including:
+
+- `status.tsv`
+- per-run `vllm_server.log`, `guidellm_output.log`,
+  `guidellm_results.json`, and `breakdown_events.jsonl`
+- `concise_summary.csv`: the preferred compact result table. It keeps only
+  model, batch size, `NUM_SPEC_TOKENS`, decode-stage verify/draft/other
+  percentages, generated tokens per decode iteration, and end-to-end mean
+  latency.
+- `summary.csv`
+- `raw_events.csv`
+- `acceptance.csv`
+- `motivation_breakdown.xlsx`, with `concise_summary` as the first sheet
+- `motivation_breakdown.svg`
+
+For P-EAGLE with `NUM_SPEC_TOKENS=16` or `24`, keep the scheduler budget large
+enough. The default `MAX_NUM_BATCHED_TOKENS=8192` is intentional; vLLM otherwise
+can fail during startup with `max_num_scheduled_tokens is set to ...`, because
+parallel drafting reserves additional draft-token slots. The script also checks
+that GuideLLM wrote a result JSON and that vLLM wrote breakdown events before it
+marks a run as `ok`.
+
 ## Current Run Notes
 
 EAGLE3 completed successfully with the local dataset:
@@ -225,6 +390,8 @@ Expected one of: {'eagle3': ..., 'dflash': ...}
 ```
 
 then the vLLM PEAGLE compatibility patch is missing or vLLM was reinstalled.
+With the current workflow, fix this in `speculators/vllm`, reinstall editable if
+needed, and verify that `vllm.__file__` points to the vendored source tree.
 
 If vLLM fails with:
 
