@@ -17,6 +17,9 @@ from PIL import Image, ImageDraw, ImageFont
 
 DEFAULT_THRESHOLDS = "0.05,0.10,0.15,0.20,0.25,0.30,0.35,0.40,0.50,0.60"
 DEFAULT_WORKLOADS = "math,mtbench"
+DEFAULT_MODELS = ""
+DEFAULT_METHODS = ""
+DEFAULT_NUM_SPEC_TOKENS = ""
 CASE_ORDER = [
     ("qwen3_8b", "peagle", "Qwen3 P-EAGLE"),
     ("qwen3_8b", "eagle3", "Qwen3 EAGLE3"),
@@ -61,35 +64,56 @@ def parse_thresholds(value: str) -> list[float]:
     return thresholds
 
 
-def trace_files(root: Path, workloads: set[str]) -> list[Path]:
+def parse_ints(value: str) -> list[int]:
+    ints: list[int] = []
+    for item in parse_list(value):
+        try:
+            ints.append(int(item))
+        except ValueError as exc:
+            raise SystemExit(f"Invalid integer in list: {item}") from exc
+    return ints
+
+
+def dataset_from_run_path(path: Path) -> str:
+    parts = path.parts
+    if "runs" not in parts:
+        return ""
+    idx = parts.index("runs") + 1
+    if idx >= len(parts):
+        return ""
+    run_name = parts[idx]
+    return run_name.split("_", 1)[0]
+
+
+def trace_files(root: Path) -> list[Path]:
     if root.is_file():
         return [root]
-    files: list[Path] = []
-    for path in sorted(root.rglob("*.jsonl")):
-        if path.parent.name != "trace" and not path.name.endswith("_trace.jsonl"):
-            continue
-        parts = path.parts
-        if "runs" in parts:
-            run_index = parts.index("runs") + 1
-            if run_index < len(parts):
-                run_name = parts[run_index]
-                if not any(run_name.startswith(f"{workload}_") for workload in workloads):
-                    continue
-        files.append(path)
-    return files
+    return [
+        path
+        for path in sorted(root.rglob("*.jsonl"))
+        if path.parent.name == "trace" or path.name.endswith("_trace.jsonl")
+    ]
 
 
-def load_steps(root: Path, workloads: set[str]) -> list[DecodeStep]:
+def load_steps(
+    root: Path,
+    workloads: set[str],
+    models: set[str],
+    methods: set[str],
+    num_spec_tokens: set[int],
+) -> list[DecodeStep]:
     grouped: dict[tuple[Any, ...], dict[str, Any]] = {}
     required = {"draft_selected_prob", "num_accepted_in_step", "draft_position"}
     missing: set[str] = set()
-    for path in trace_files(root, workloads):
+    for path in trace_files(root):
         with path.open("r", encoding="utf-8") as f:
             for line in f:
                 if not line.strip():
                     continue
                 row = json.loads(line)
                 workload = str(row.get("dataset_label") or "")
+                if not workload:
+                    workload = dataset_from_run_path(path)
                 if workload not in workloads:
                     continue
                 for field in required:
@@ -99,11 +123,18 @@ def load_steps(root: Path, workloads: set[str]) -> list[DecodeStep]:
                     continue
                 model_label = str(row.get("model_label") or "qwen3_8b")
                 method = str(row.get("method") or "eagle3")
+                if models and model_label not in models:
+                    continue
+                if methods and method not in methods:
+                    continue
+                k = int(row["num_spec_tokens"])
+                if num_spec_tokens and k not in num_spec_tokens:
+                    continue
                 key = (
                     workload,
                     model_label,
                     method,
-                    int(row["num_spec_tokens"]),
+                    k,
                     str(row.get("request_id") or row.get("sequence_id") or ""),
                     int(row["step_id"]),
                 )
@@ -123,7 +154,7 @@ def load_steps(root: Path, workloads: set[str]) -> list[DecodeStep]:
     if missing:
         raise SystemExit(f"Trace rows are missing required fields: {sorted(missing)}")
     if not grouped:
-        raise SystemExit(f"No math/MTBench trace rows found under {root}")
+        raise SystemExit(f"No matching trace rows found under {root}")
 
     steps: list[DecodeStep] = []
     for key, group in grouped.items():
@@ -176,6 +207,7 @@ def summarize_group(steps: list[DecodeStep], threshold: float) -> dict[str, Any]
     if n == 0:
         raise ValueError("Cannot summarize an empty group")
     error_count = 0
+    mismatch_count = 0
     pred_sum = 0.0
     efficiency_sum = 0.0
     actual_sum = 0.0
@@ -184,6 +216,8 @@ def summarize_group(steps: list[DecodeStep], threshold: float) -> dict[str, Any]
         pred_sum += pred
         efficiency_sum += pred / max(step.num_spec_tokens, 1)
         actual_sum += step.actual_accept_tokens
+        if pred != step.actual_accept_tokens:
+            mismatch_count += 1
         if pred > step.actual_accept_tokens:
             error_count += 1
     first = steps[0]
@@ -196,6 +230,7 @@ def summarize_group(steps: list[DecodeStep], threshold: float) -> dict[str, Any]
         "threshold": threshold,
         "num_decode_steps": n,
         "error_probability": error_count / n,
+        "mismatch_probability": mismatch_count / n,
         "compute_efficiency": efficiency_sum / n,
         "mean_pred_tokens": pred_sum / n,
         "mean_actual_accept_tokens": actual_sum / n,
@@ -267,6 +302,7 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "threshold",
         "num_decode_steps",
         "error_probability",
+        "mismatch_probability",
         "compute_efficiency",
         "mean_pred_tokens",
         "mean_actual_accept_tokens",
@@ -308,7 +344,8 @@ def draw_tradeoff(path: Path, rows: list[dict[str, Any]], workloads: list[str]) 
     draw.text((margin_l, 24), "DLM confidence threshold tradeoff", fill="#111111", font=font())
     draw.text(
         (margin_l, 48),
-        "x: prediction error P(pred > actual accept), y: compute efficiency E(pred / K). Hollow points are Pareto-optimal thresholds.",
+        "x: overrun risk P(pred > actual), y: compute efficiency E(pred / K). "
+        "Hollow points are Pareto-optimal thresholds.",
         fill="#333333",
         font=font(),
     )
@@ -383,7 +420,7 @@ def draw_tradeoff(path: Path, rows: list[dict[str, Any]], workloads: list[str]) 
                     font=font(),
                 )
             if row_idx == panel_rows - 1:
-                draw.text((px0 + 80, y1 - 18), "prediction error", fill="#111111", font=font())
+                draw.text((px0 + 80, y1 - 18), "overrun risk", fill="#111111", font=font())
             if col_idx == 0:
                 draw.text((x0 + 2, py0 - 18), "compute efficiency", fill="#111111", font=font())
     image.save(path)
@@ -397,7 +434,8 @@ def write_report(root: Path, rows: list[dict[str, Any]], thresholds: list[float]
         "",
         "Definitions:",
         "",
-        "- `prediction error`: `P(pred_tokens > actual_accept_tokens)`.",
+        "- `prediction overrun`: `P(pred_tokens > actual_accept_tokens)`.",
+        "- `prediction mismatch`: `P(pred_tokens != actual_accept_tokens)`.",
         "- `compute efficiency`: `E[pred_tokens / K]`.",
         "- Pareto optimal means no other threshold has both lower-or-equal error and higher-or-equal efficiency with one strict improvement.",
         "",
@@ -421,7 +459,8 @@ def write_report(root: Path, rows: list[dict[str, Any]], thresholds: list[float]
                 parts = [
                     (
                         f"t={row['threshold']:g} "
-                        f"err={row['error_probability']:.3f} "
+                        f"over={row['error_probability']:.3f} "
+                        f"mismatch={row['mismatch_probability']:.3f} "
                         f"eff={row['compute_efficiency']:.3f}"
                     )
                     for row in group
@@ -440,11 +479,28 @@ def write_report(root: Path, rows: list[dict[str, Any]], thresholds: list[float]
     (root / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def analyze(trace_root: Path, output_root: Path, thresholds: list[float], workloads: list[str]) -> None:
+def analyze(
+    trace_root: Path,
+    output_root: Path,
+    thresholds: list[float],
+    workloads: list[str],
+    models: list[str],
+    methods: list[str],
+    num_spec_tokens: list[int],
+) -> None:
     output_root.mkdir(parents=True, exist_ok=True)
     fig_dir = output_root / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
-    rows = analyze_steps(load_steps(trace_root, set(workloads)), thresholds)
+    rows = analyze_steps(
+        load_steps(
+            trace_root,
+            set(workloads),
+            set(models),
+            set(methods),
+            set(num_spec_tokens),
+        ),
+        thresholds,
+    )
     write_csv(output_root / "threshold_tradeoff.csv", rows)
     write_csv(output_root / "pareto_thresholds.csv", [row for row in rows if row["is_pareto_optimal"]])
     draw_tradeoff(fig_dir / "threshold_tradeoff.png", rows, workloads)
@@ -482,7 +538,7 @@ def self_test() -> None:
             for row in rows:
                 f.write(json.dumps(row) + "\n")
         out = root / "out"
-        analyze(root, out, [0.5, 0.05], ["math"])
+        analyze(root, out, [0.5, 0.05], ["math"], ["qwen3_8b"], ["eagle3"], [4])
         tradeoff = list(csv.DictReader((out / "threshold_tradeoff.csv").open()))
         by_threshold = {float(row["threshold"]): row for row in tradeoff}
         assert abs(float(by_threshold[0.5]["error_probability"]) - 0.0) < 1e-9
@@ -499,6 +555,9 @@ def main() -> None:
     parser.add_argument("--output-root", type=Path)
     parser.add_argument("--thresholds", default=DEFAULT_THRESHOLDS)
     parser.add_argument("--workloads", default=DEFAULT_WORKLOADS)
+    parser.add_argument("--models", default=DEFAULT_MODELS)
+    parser.add_argument("--methods", default=DEFAULT_METHODS)
+    parser.add_argument("--num-spec-tokens", default=DEFAULT_NUM_SPEC_TOKENS)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -513,6 +572,9 @@ def main() -> None:
         output_root=args.output_root,
         thresholds=parse_thresholds(args.thresholds),
         workloads=parse_list(args.workloads),
+        models=parse_list(args.models),
+        methods=parse_list(args.methods),
+        num_spec_tokens=parse_ints(args.num_spec_tokens),
     )
 
 
