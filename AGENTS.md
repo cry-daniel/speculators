@@ -389,9 +389,9 @@ and is meant for breakdown analysis, not for clean throughput-only numbers.
 
 ## Confidence Acceptance Experiment
 
-`run_speclink_confidence_acceptance.sh` implements Experiment 1 from
-`ExperimentTODO.md`: whether DLM draft-token confidence predicts TLM local
-acceptance. It does not implement chunked verification scheduling.
+`run_speclink_confidence_acceptance.sh` tests whether DLM draft-token confidence
+predicts TLM local acceptance. It does not implement chunked verification
+scheduling.
 
 The vLLM trace is off by default and is enabled only by:
 
@@ -561,6 +561,70 @@ moved out of `results/` to:
 
 ```text
 temp/moved_from_results_20260525_203200/
+```
+
+## Acceptance Jitter Experiment
+
+`run_acceptance_jitter.sh` is the one-command reproduction for the accepted
+draft-token count jitter figure. It uses normal vLLM speculative decoding with
+`SPECLINK_TRACE_CONFIDENCE=1`; it does not use scheduler-level chunking or any
+`SPECLINK_CHUNK_*` path.
+
+Run from `examples/evaluate/eval-guidellm`:
+
+```bash
+cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
+conda run -n spec bash ./run_acceptance_jitter.sh
+```
+
+Default matrix:
+
+- cases: `qwen3_8b:peagle qwen3_8b:eagle3 llama3_1_8b:eagle3`
+- `NUM_SPEC_TOKENS_LIST="8 12 16"`
+- workloads: `math mtbench synthetic_1000x1000`
+- prompt counts: math=80, MTBench=80, synthetic=8
+- real datasets use `max_tokens=128`
+- synthetic uses exact token-id prompts with `SYNTHETIC_PROMPT_TOKENS=1000`
+  and `SYNTHETIC_MAX_TOKENS=1000`
+
+Final outputs are written under:
+
+```text
+results/accepted_count_jitter_TIMESTAMP/
+```
+
+Intermediate vLLM logs, responses, and raw trace JSONL files are written under:
+
+```text
+temp/accepted_count_jitter_work_TIMESTAMP/
+```
+
+Key final files:
+
+- `step_level_acceptance.csv`: one row per decode step with
+  `num_accepted`.
+- `summary.csv`: mean/std of accepted tokens, `P(accepted < 2)`,
+  `P(accepted < 4)`, full-prefix acceptance rate, and jitter metrics by
+  workload/case/K.
+- `accepted_count_distribution.csv`: empirical accepted-count distribution.
+- `figures/math_accepted_count_jitter.png`
+- `figures/mtbench_accepted_count_jitter.png`
+- `figures/synthetic_1000x1000_accepted_count_jitter.png`
+- `report.md`
+
+Useful commands:
+
+```bash
+# Preview all 27 cases without launching vLLM
+conda run -n spec bash ./run_acceptance_jitter.sh --dry-run
+
+# Fast smoke into temp/
+conda run -n spec bash ./run_acceptance_jitter.sh --smoke-only
+
+# Re-analyze an existing intermediate work root into a final results dir
+conda run -n spec bash ./run_acceptance_jitter.sh \
+  --analyze-only ./temp/accepted_count_jitter_work_TIMESTAMP \
+  --output-root ./results/accepted_count_jitter_TIMESTAMP
 ```
 
 ## Current Run Notes

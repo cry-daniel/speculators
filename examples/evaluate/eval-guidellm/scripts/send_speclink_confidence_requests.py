@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Any
 
 
+PromptValue = str | list[int]
+
+
 def read_jsonl(path: Path, max_prompts: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as f:
@@ -25,7 +28,63 @@ def read_jsonl(path: Path, max_prompts: int) -> list[dict[str, Any]]:
     return rows
 
 
-def build_prompt(row: dict[str, Any], dataset_index: int) -> str:
+def build_synthetic_rows(
+    *,
+    model: str,
+    max_prompts: int,
+    prompt_tokens: int,
+) -> list[dict[str, Any]]:
+    if max_prompts <= 0:
+        raise ValueError("--max-prompts must be positive for synthetic prompts")
+    if prompt_tokens <= 0:
+        raise ValueError("--synthetic-prompt-tokens must be positive")
+    try:
+        from transformers import AutoTokenizer
+    except ImportError as exc:
+        raise SystemExit(
+            "Synthetic prompt generation requires transformers in the current env"
+        ) from exc
+
+    tokenizer = AutoTokenizer.from_pretrained(model, trust_remote_code=True)
+    filler_text = (
+        "This is a deterministic synthetic benchmark prompt used to measure "
+        "speculative decoding acceptance behavior. "
+    )
+    filler_ids = tokenizer.encode(filler_text, add_special_tokens=False)
+    if not filler_ids:
+        raise ValueError(f"Tokenizer produced no ids for synthetic filler: {model}")
+
+    rows: list[dict[str, Any]] = []
+    for idx in range(max_prompts):
+        prefix_text = f"Synthetic benchmark request {idx}.\n"
+        prefix_ids = tokenizer.encode(prefix_text, add_special_tokens=False)
+        needed = max(prompt_tokens - len(prefix_ids), 0)
+        repeated = (filler_ids * ((needed // len(filler_ids)) + 1))[:needed]
+        prompt_ids = (prefix_ids + repeated)[:prompt_tokens]
+        if len(prompt_ids) < prompt_tokens:
+            prompt_ids.extend(
+                (filler_ids * (((prompt_tokens - len(prompt_ids)) // len(filler_ids)) + 1))[
+                    : prompt_tokens - len(prompt_ids)
+                ]
+            )
+        rows.append(
+            {
+                "prompt_token_ids": [int(token_id) for token_id in prompt_ids],
+                "prompt_token_count": len(prompt_ids),
+                "dataset_label": "synthetic_1000x1000",
+                "question_id": f"synthetic-{idx}",
+                "category": "synthetic",
+            }
+        )
+    return rows
+
+
+def build_prompt(row: dict[str, Any], dataset_index: int) -> PromptValue:
+    prompt_token_ids = row.get("prompt_token_ids")
+    if isinstance(prompt_token_ids, list) and all(
+        isinstance(item, int) for item in prompt_token_ids
+    ):
+        return prompt_token_ids
     prompt = row.get("prompt") or row.get("question") or row.get("text")
     if isinstance(prompt, str):
         return prompt
@@ -117,8 +176,9 @@ def run_one(
         "model_label": model_label,
         "num_spec_tokens": num_spec_tokens,
         "latency_s": elapsed,
-        "prompt_chars": len(prompt),
+        "prompt_chars": len(prompt) if isinstance(prompt, str) else None,
         "response_id": response.get("id"),
+        "prompt_token_count": len(prompt) if isinstance(prompt, list) else None,
         "usage": response.get("usage"),
     }
 
@@ -129,7 +189,13 @@ def main() -> None:
     parser.add_argument("--model", required=True)
     parser.add_argument("--model-label", default="")
     parser.add_argument("--dataset-label", default="")
-    parser.add_argument("--dataset", type=Path, required=True)
+    parser.add_argument("--dataset", type=Path)
+    parser.add_argument(
+        "--synthetic-prompt-tokens",
+        type=int,
+        default=0,
+        help="Generate synthetic prompt token-id requests with this exact length",
+    )
     parser.add_argument("--method", required=True, choices=["eagle3", "peagle"])
     parser.add_argument("--num-spec-tokens", type=int, required=True)
     parser.add_argument("--max-prompts", type=int, required=True)
@@ -143,7 +209,16 @@ def main() -> None:
     parser.add_argument("--output-jsonl", type=Path, required=True)
     args = parser.parse_args()
 
-    rows = read_jsonl(args.dataset, args.max_prompts)
+    if args.synthetic_prompt_tokens > 0:
+        rows = build_synthetic_rows(
+            model=args.model,
+            max_prompts=args.max_prompts,
+            prompt_tokens=args.synthetic_prompt_tokens,
+        )
+    elif args.dataset is not None:
+        rows = read_jsonl(args.dataset, args.max_prompts)
+    else:
+        raise SystemExit("Either --dataset or --synthetic-prompt-tokens is required")
     args.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
     results: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as pool:
