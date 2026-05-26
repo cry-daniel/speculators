@@ -627,6 +627,54 @@ conda run -n spec bash ./run_acceptance_jitter.sh \
   --output-root ./results/accepted_count_jitter_TIMESTAMP
 ```
 
+## Threshold Tradeoff Analysis
+
+`scripts/threshold_tradeoff.py` is an offline analysis over the confidence trace
+produced by `run_acceptance_jitter.sh`. It does not launch vLLM and does not
+analyze synthetic data by default; the default workloads are `math,mtbench`.
+
+The confidence rule is prefix sequence confidence:
+
+```text
+confidence(h) = product(draft_selected_prob[1:h])
+```
+
+For each threshold, the predicted token count is the largest prefix length whose
+confidence stays above the threshold. If the first draft token is already below
+the threshold, the prediction is 0.
+
+Primary metrics:
+
+- `error_probability`: `P(pred_tokens > actual_accept_tokens)`.
+- `compute_efficiency`: `E(pred_tokens / K)`.
+
+Pareto-optimal thresholds are those not dominated by another threshold with both
+lower-or-equal `error_probability` and higher-or-equal `compute_efficiency`.
+
+Run from `examples/evaluate/eval-guidellm`:
+
+```bash
+conda run -n spec python ./scripts/threshold_tradeoff.py \
+  ./temp/accepted_count_jitter_work_TIMESTAMP \
+  --output-root ./results/threshold_tradeoff_TIMESTAMP
+```
+
+Custom empirical thresholds:
+
+```bash
+conda run -n spec python ./scripts/threshold_tradeoff.py \
+  ./temp/accepted_count_jitter_work_TIMESTAMP \
+  --output-root ./results/threshold_tradeoff_TIMESTAMP \
+  --thresholds 0.05,0.10,0.20,0.30,0.40,0.50
+```
+
+Outputs:
+
+- `threshold_tradeoff.csv`: all threshold points.
+- `pareto_thresholds.csv`: non-dominated threshold points.
+- `figures/threshold_tradeoff.png`
+- `report.md`
+
 ## Current Run Notes
 
 EAGLE3 completed successfully with the local dataset:
