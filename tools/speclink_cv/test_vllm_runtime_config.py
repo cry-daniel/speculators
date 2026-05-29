@@ -21,35 +21,12 @@ def test_env_parsing() -> None:
         "os.environ",
         {
             "SPECLINK_CV_ENABLE": "1",
-            "SPECLINK_CV_CONFIDENCE_SIZING": "0",
             "SPECLINK_CV_CANDIDATE_CHUNKS": "1,2,full",
             "SPECLINK_CV_MAX_VERIFY_TOKENS_PER_STEP": "4096",
             "SPECLINK_CV_ALLOW_BATCHED_PREFIX": "1",
             "SPECLINK_CV_ALLOW_BATCHED_SUFFIX": "1",
-            "SPECLINK_CV_GLOBAL_BATCH_BARRIER": "1",
-            "SPECLINK_CV_ALLOW_SHAPE_DRIFT_CHUNKING": "1",
-            "SPECLINK_CV_SUFFIX_REPLAY_ONE_SHOT_SHAPE": "0",
-            "SPECLINK_CV_CONFIRM_PREFIX_REJECT_ONE_SHOT": "1",
-            "SPECLINK_CV_CONFIRM_PREFIX_ACCEPT_ONE_SHOT": "1",
-            "SPECLINK_CV_CONFIRMATION_FULL_ACTIVE_SET": "1",
-            "SPECLINK_CV_LOCKSTEP_ITERATION_BARRIER": "1",
-            "SPECLINK_CV_PREFIX_PROBE_BLOCK_ROLLBACK": "1",
-            "SPECLINK_CV_PREFIX_LOW_MARGIN_FALLBACK_THRESHOLD": "0.5",
-            "SPECLINK_CV_BATCH_WIDE_LOW_MARGIN_FALLBACK": "1",
-            "SPECLINK_CV_BATCH_WIDE_PREFIX_REJECT_FALLBACK": "1",
-            "SPECLINK_CV_RECOMPUTE_COMMITTED_PREFIX": "1",
-            "SPECLINK_CV_ALLOW_BATCHED_DENSE_REALIGN": "1",
-            "SPECLINK_CV_PREFIX_NO_KV_WRITE": "1",
-            "SPECLINK_CV_FORCE_DECODE_ISOLATION": "1",
-            "SPECLINK_CV_KV_DEBUG_TAIL_TOKENS": "4",
-            "SPECLINK_CV_KV_DEBUG_MAX_LAYERS": "2",
-            "SPECLINK_CV_KV_DEBUG_ROW_INDEX": "3",
-            "SPECLINK_CV_KV_DEBUG_MIN_OUTPUT_TOKENS": "10",
-            "SPECLINK_CV_KV_DEBUG_MAX_OUTPUT_TOKENS": "20",
             "SPECLINK_CV_LOG_MAX_EVENTS": "123",
             "SPECLINK_CV_PROFILE_MAX_EVENTS": "456",
-            "SPECLINK_CV_DENSE_REALIGN_STEPS": "0",
-            "SPECLINK_CV_PREFIX_REJECT_DENSE_REALIGN_STEPS": "2",
             "SPECLINK_CV_MAX_QUEUE_WAIT_MS": "3.5",
             "SPECLINK_CV_LOG_JSONL": "/tmp/speclink_cv.jsonl",
             "SPECLINK_CV_PROFILE_JSONL": "/tmp/speclink_cv_profile.jsonl",
@@ -63,62 +40,43 @@ def test_env_parsing() -> None:
     assert cfg.max_verify_tokens_per_step == 4096
     assert cfg.allow_batched_prefix
     assert cfg.allow_batched_suffix
-    assert cfg.global_batch_barrier
     assert cfg.allow_shape_drift_chunking
-    assert not cfg.suffix_replay_one_shot_shape
-    assert cfg.confirm_prefix_reject_one_shot
-    assert cfg.confirm_prefix_accept_one_shot
-    assert cfg.confirmation_full_active_set
-    assert cfg.lockstep_iteration_barrier
-    assert cfg.prefix_probe_block_rollback
-    assert cfg.prefix_low_margin_fallback_threshold == 0.5
-    assert cfg.batch_wide_low_margin_fallback
-    assert cfg.batch_wide_prefix_reject_fallback
-    assert cfg.recompute_committed_prefix
-    assert cfg.allow_batched_dense_realign
-    assert cfg.prefix_no_kv_write
-    assert cfg.force_decode_isolation
-    assert cfg.kv_debug_tail_tokens == 4
-    assert cfg.kv_debug_max_layers == 2
-    assert cfg.kv_debug_row_index == 3
-    assert cfg.kv_debug_min_output_tokens == 10
-    assert cfg.kv_debug_max_output_tokens == 20
     assert cfg.log_max_events == 123
     assert cfg.profile_max_events == 456
     assert cfg.dense_realign_steps == 0
     assert cfg.effective_dense_realign_steps(8) == 0
-    assert cfg.prefix_reject_dense_realign_steps == 2
-    assert cfg.effective_prefix_reject_dense_realign_steps(8) == 2
+    assert cfg.prefix_reject_dense_realign_steps == 0
+    assert cfg.effective_prefix_reject_dense_realign_steps(8) == 0
     assert cfg.max_queue_wait_ms == 3.5
     assert cfg.log_jsonl == "/tmp/speclink_cv.jsonl"
     assert cfg.profile_jsonl == "/tmp/speclink_cv_profile.jsonl"
 
 
-def test_dense_realign_default_uses_num_spec_tokens() -> None:
+def test_dense_realign_default_is_performance_path() -> None:
     cfg = SpecLinkCVRuntimeConfig()
-    assert cfg.dense_realign_steps == -1
-    assert cfg.effective_dense_realign_steps(8) == 8
-    assert cfg.effective_dense_realign_steps(0) == 1
+    assert cfg.dense_realign_steps == 0
+    assert cfg.effective_dense_realign_steps(8) == 0
+    assert cfg.effective_dense_realign_steps(0) == 0
     assert cfg.prefix_reject_dense_realign_steps == 0
     assert cfg.effective_prefix_reject_dense_realign_steps(8) == 0
 
 
-def test_suffix_replay_defaults_off() -> None:
+def test_live_chunking_defaults_on() -> None:
     with patch.dict("os.environ", {}, clear=True):
         cfg = SpecLinkCVRuntimeConfig.from_env()
-    assert not cfg.suffix_replay_one_shot_shape
+    assert cfg.allow_shape_drift_chunking
     assert cfg.log_max_events == 1_000
     assert cfg.profile_max_events == 500
 
 
-def test_suffix_replay_can_be_enabled() -> None:
+def test_live_chunking_can_be_disabled_for_debug() -> None:
     with patch.dict(
         "os.environ",
-        {"SPECLINK_CV_SUFFIX_REPLAY_ONE_SHOT_SHAPE": "1"},
+        {"SPECLINK_CV_ALLOW_SHAPE_DRIFT_CHUNKING": "0"},
         clear=True,
     ):
         cfg = SpecLinkCVRuntimeConfig.from_env()
-    assert cfg.suffix_replay_one_shot_shape
+    assert not cfg.allow_shape_drift_chunking
 
 
 def test_batched_suffix_defaults_to_batched_prefix() -> None:
@@ -363,9 +321,10 @@ def test_async_dispatch_conservative_default_caps_one_prefix() -> None:
 
 if __name__ == "__main__":
     test_env_parsing()
-    test_dense_realign_default_uses_num_spec_tokens()
-    test_suffix_replay_defaults_off()
-    test_suffix_replay_can_be_enabled()
+    test_dense_realign_default_is_performance_path()
+    test_live_chunking_defaults_on()
+    test_live_chunking_can_be_disabled_for_debug()
+    test_batched_suffix_defaults_to_batched_prefix()
     test_fixed_half_prefix_choice()
     test_confidence_unavailable_is_conservative()
     test_force_prefix_len_overrides_decision()

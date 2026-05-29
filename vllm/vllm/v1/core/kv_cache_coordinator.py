@@ -207,17 +207,6 @@ class KVCacheCoordinator(ABC):
         for manager in self.single_type_managers:
             manager.free(request_id)
 
-    def truncate_blocks(
-        self, request_id: str, num_tokens: int
-    ) -> tuple[list[int], ...]:
-        """Free tail KV blocks beyond a request's logical token length."""
-        return tuple(
-            []
-            if isinstance(manager, CrossAttentionManager)
-            else manager.truncate_blocks(request_id, num_tokens)
-            for manager in self.single_type_managers
-        )
-
     def get_num_common_prefix_blocks(self, running_request_id: str) -> list[int]:
         """
         Get the number of common prefix blocks for all requests with allocated

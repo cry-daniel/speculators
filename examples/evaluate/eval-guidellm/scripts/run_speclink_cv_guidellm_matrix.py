@@ -42,7 +42,6 @@ RESULT_SUBDIRS = [
     "00_env",
     "01_impl_notes",
     "02_unit_tests",
-    "03_confidence_calibration",
     "04_baselines",
     "05_cv_ablation",
     "06_scheduler_queue",
@@ -61,23 +60,18 @@ FOCUSED_TESTS = [
     "test_roofline_packing",
     "test_correctness_smoke",
     "test_vllm_runtime_config",
-    "test_sampler_draft_accept_eps",
     "test_math_answer_extraction",
 ]
 
 
 METHODS: dict[str, dict[str, str]] = {
-    "pure_vllm": {"spec": "0", "cv": "0", "confidence": "0", "async": "0", "roofline": "0"},
-    "eagle3_oneshot": {"spec": "1", "cv": "0", "confidence": "0", "async": "0", "roofline": "0"},
-    "cv_half_sync_simple": {"spec": "1", "cv": "1", "confidence": "0", "async": "0", "roofline": "0"},
-    "cv_half_sync_roofline": {"spec": "1", "cv": "1", "confidence": "0", "async": "0", "roofline": "1"},
-    "cv_half_async_simple": {"spec": "1", "cv": "1", "confidence": "0", "async": "1", "roofline": "0"},
-    "cv_half_async_roofline": {"spec": "1", "cv": "1", "confidence": "0", "async": "1", "roofline": "1"},
-    "cv_half_async_staged_simple": {"spec": "1", "cv": "1", "confidence": "0", "async": "1", "roofline": "0", "staged": "1"},
-    "cv_conf_sync_simple": {"spec": "1", "cv": "1", "confidence": "1", "async": "0", "roofline": "0"},
-    "cv_conf_sync_roofline": {"spec": "1", "cv": "1", "confidence": "1", "async": "0", "roofline": "1"},
-    "cv_conf_async_simple": {"spec": "1", "cv": "1", "confidence": "1", "async": "1", "roofline": "0"},
-    "cv_conf_async_roofline": {"spec": "1", "cv": "1", "confidence": "1", "async": "1", "roofline": "1"},
+    "pure_vllm": {"spec": "0", "cv": "0", "async": "0", "roofline": "0"},
+    "eagle3_oneshot": {"spec": "1", "cv": "0", "async": "0", "roofline": "0"},
+    "cv_half_sync_simple": {"spec": "1", "cv": "1", "async": "0", "roofline": "0"},
+    "cv_half_sync_roofline": {"spec": "1", "cv": "1", "async": "0", "roofline": "1"},
+    "cv_half_async_simple": {"spec": "1", "cv": "1", "async": "1", "roofline": "0"},
+    "cv_half_async_roofline": {"spec": "1", "cv": "1", "async": "1", "roofline": "1"},
+    "cv_half_async_staged_simple": {"spec": "1", "cv": "1", "async": "1", "roofline": "0", "staged": "1"},
 }
 
 ANALYSIS_PROFILE_MAX_ROWS = int(
@@ -1515,10 +1509,9 @@ def write_setup_artifacts(root: Path, args: argparse.Namespace) -> None:
         "- `SPECLINK_CV_ALLOW_BATCHED_SUFFIX=1` keeps suffix verification inside the regular batched scheduler path instead of isolating one suffix request per step; without it, skipped verifier work is often hidden by singleton suffix scheduling overhead.\n"
         "- `--nsys-profile` wraps the server command in Nsight Systems, sets `VLLM_WORKER_MULTIPROC_METHOD=spawn`, passes `--profiler-config.profiler cuda`, and brackets the benchmark client with `/start_profile` and `/stop_profile`.\n"
         "- Nsight runs write `nsys_stats.txt` plus quick CSV/Markdown summaries for SM/Tensor/DRAM activity, kernel gaps, and CUDA API overhead; intermediate SQLite exports are removed unless `--keep-nsys-sqlite` is set.\n"
-        "- Live SpecLink-CV defaults to exact-safe mode. Unless `--allow-shape-drift-chunking` / `SPECLINK_CV_ALLOW_SHAPE_DRIFT_CHUNKING=1` is set, h<K CV rows fall back to EAGLE3 one-shot because verifier-shape drift has been observed. Such rows are exact but not valid chunked speedup claims.\n"
-        "- For token-id exact h<K debugging, pass `--allow-shape-drift-chunking --env VLLM_BATCH_INVARIANT=1`. For math-quality performance runs, leave `VLLM_BATCH_INVARIANT=0` and require the math quality gate to pass.\n"
+        "- Live SpecLink-CV uses h<K chunking by default and treats math answer quality, not bit-for-bit EAGLE3 equality, as the performance-run gate.\n"
         "- The matrix runner supports `--resume`, `--case-offset`, and `--case-limit` so long runs can be split without losing completed cases.\n"
-        "- Text-level exact-match is computed by aligning GuideLLM successful requests by `request_args` against the matching `eagle3_oneshot` run; token-id exact-match must be verified with `tools/speclink_cv/live_correctness_smoke.py`.\n"
+        "- Text-level exact-match is computed by aligning GuideLLM successful requests by `request_args` against the matching `eagle3_oneshot` run; treat it as a drift diagnostic only.\n"
         "- JSONL debug/profile output is bounded by `--log-max-events`, `--profile-max-events`, and `--analysis-profile-max-rows`; increase them only for a short representative diagnostic.\n",
         encoding="utf-8",
     )
@@ -1612,7 +1605,7 @@ def server_command(case: dict[str, Any], args: argparse.Namespace, run_dir: Path
         "--max-num-batched-tokens",
         str(args.max_num_batched_tokens),
     ]
-    if args.enforce_eager or (method_cfg["cv"] == "1" and not args.allow_cv_cudagraph):
+    if args.enforce_eager:
         cmd.append("--enforce-eager")
     if args.disable_vllm_async_scheduling or method_cfg["cv"] == "1":
         cmd.append("--no-async-scheduling")
@@ -1742,7 +1735,6 @@ def case_env(case: dict[str, Any], args: argparse.Namespace, run_dir: Path) -> d
     env.update(
         {
             "SPECLINK_CV_ENABLE": method_cfg["cv"],
-            "SPECLINK_CV_CONFIDENCE_SIZING": method_cfg["confidence"],
             "SPECLINK_CV_ASYNC_QUEUE": method_cfg["async"],
             "SPECLINK_CV_ROOFLINE_PACKING": method_cfg["roofline"],
             "SPECLINK_CV_STAGED_DRAFTING": method_cfg.get("staged", "0"),
@@ -1760,14 +1752,10 @@ def case_env(case: dict[str, Any], args: argparse.Namespace, run_dir: Path) -> d
             "SPECLINK_CV_ALLOW_BATCHED_SUFFIX": "1"
             if args.allow_batched_prefix_verification
             else "0",
-            "SPECLINK_CV_ALLOW_SHAPE_DRIFT_CHUNKING": "1"
-            if args.allow_shape_drift_chunking
-            else "0",
+            "SPECLINK_CV_ALLOW_SHAPE_DRIFT_CHUNKING": "1",
         }
     )
     env.update(parse_env_items(args.env))
-    if args.calibration_path:
-        env["SPECLINK_CV_CALIBRATION_PATH"] = str(Path(args.calibration_path).resolve())
     if args.nsys_profile:
         env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
     return env
@@ -2232,7 +2220,7 @@ def scenario_key(row: dict[str, Any]) -> tuple[Any, ...]:
 
 def method_family(method: str) -> dict[str, str]:
     return {
-        "confidence": "conf" if "_conf_" in method else "half",
+        "drafting": "staged" if "_staged_" in method else "full",
         "queue": "async" if "_async_" in method else "sync",
         "packing": "roofline" if method.endswith("_roofline") else "simple",
     }
@@ -2439,19 +2427,19 @@ def build_figure_artifacts(root: Path, rows: list[dict[str, Any]]) -> None:
     write_csv(fig_dir / "extra_tlm_forwards_vs_speedup.csv", scatter_rows)
     draw_scatter_figure(fig_dir / "extra_tlm_forwards_vs_speedup.png", "Extra TLM forwards vs speedup", scatter_rows, "extra_tlm_forwards_per_request", "speedup_vs_eagle3", "label")
 
-    half_conf = aggregate_mean(skipped, ["model", "dataset", "K", "batch_size", "method"], "speedup_vs_eagle3")
-    for row in half_conf:
+    cv_method_rows = aggregate_mean(skipped, ["model", "dataset", "K", "batch_size", "method"], "speedup_vs_eagle3")
+    for row in cv_method_rows:
         row.update(method_family(str(row.get("method", ""))))
-    write_csv(fig_dir / "fixed_half_vs_confidence_speedup.csv", half_conf)
-    half_conf_summary = aggregate_mean(half_conf, ["confidence"], "speedup_vs_eagle3")
-    draw_bar_figure(fig_dir / "fixed_half_vs_confidence_speedup.png", "Fixed half vs confidence-guided speedup", half_conf_summary, "label", "speedup_vs_eagle3")
-    sync_async_summary = aggregate_mean(half_conf, ["queue"], "speedup_vs_eagle3")
+    write_csv(fig_dir / "cv_method_speedup.csv", cv_method_rows)
+    drafting_summary = aggregate_mean(cv_method_rows, ["drafting"], "speedup_vs_eagle3")
+    draw_bar_figure(fig_dir / "staged_vs_full_drafting_speedup.png", "Staged vs full drafting speedup", drafting_summary, "label", "speedup_vs_eagle3")
+    sync_async_summary = aggregate_mean(cv_method_rows, ["queue"], "speedup_vs_eagle3")
     write_csv(fig_dir / "sync_vs_async_speedup.csv", sync_async_summary)
     draw_bar_figure(fig_dir / "sync_vs_async_speedup.png", "Sync vs async queue speedup", sync_async_summary, "label", "speedup_vs_eagle3")
-    roofline_summary = aggregate_mean(half_conf, ["packing"], "speedup_vs_eagle3")
+    roofline_summary = aggregate_mean(cv_method_rows, ["packing"], "speedup_vs_eagle3")
     write_csv(fig_dir / "simple_vs_roofline_speedup.csv", roofline_summary)
     draw_bar_figure(fig_dir / "simple_vs_roofline_speedup.png", "Simple vs roofline packing speedup", roofline_summary, "label", "speedup_vs_eagle3")
-    heatmap = aggregate_mean(half_conf, ["confidence", "queue", "packing"], "speedup_vs_eagle3")
+    heatmap = aggregate_mean(cv_method_rows, ["drafting", "queue", "packing"], "speedup_vs_eagle3")
     write_csv(fig_dir / "ablation_heatmap.csv", heatmap)
     draw_bar_figure(fig_dir / "ablation_heatmap.png", "Ablation heatmap summary", heatmap, "label", "speedup_vs_eagle3")
     best_rows = list(best.values())
@@ -2459,12 +2447,6 @@ def build_figure_artifacts(root: Path, rows: list[dict[str, Any]]) -> None:
         row["label"] = f"{row['model']} {row['dataset']} K{row['K']} bs{row['batch_size']} {row['method']}"
     write_csv(fig_dir / "best_configuration_by_scenario.csv", best_rows)
     draw_bar_figure(fig_dir / "best_configuration_by_scenario.png", "Best SpecLink-CV configuration by scenario", best_rows[:40], "label", "throughput")
-
-    confidence_status = [
-        {"artifact": "reliability_diagram", "status": "not_generated_by_guidellm_runner", "note": "Use tools/speclink_cv/run_trace_experiment.py for calibration figures."}
-    ]
-    write_csv(fig_dir / "confidence_calibration_reliability.csv", confidence_status)
-    figure_text(fig_dir / "confidence_calibration_reliability.png", "DLM confidence calibration reliability", [confidence_status[0]["note"]])
 
 
 def write_guidellm_report(root: Path, rows: list[dict[str, Any]], unit_rows: list[dict[str, Any]], args: argparse.Namespace) -> None:
@@ -2550,12 +2532,11 @@ def write_guidellm_report(root: Path, rows: list[dict[str, Any]], unit_rows: lis
             "- For `math_reasoning`, the quality gate uses answer exact match against the dataset reference and allows small output drift when math answer quality is preserved. Use longer `--max-tokens` for reliable math EM; very short outputs are marked `quality_unreliable_short_outputs`.",
             "- MTBench currently has `reference=null` in the local dataset and is not part of the primary quality conclusion unless a judge is added; proxy similarity rows are reported only as diagnostics.",
             "- `cv_*` methods use the regular V1 scheduler with vLLM async scheduling disabled, while `SPECLINK_CV_ASYNC_QUEUE` controls the experiment's own verification queue.",
-            "- Exact-safe mode is enabled by default. Because h<K chunked verifier shapes have shown greedy argmax drift versus full-K EAGLE3 one-shot, `SPECLINK_CV_ALLOW_SHAPE_DRIFT_CHUNKING=0` falls CV rows back to EAGLE3 one-shot and the speedup gate marks them `invalid_no_live_chunking`.",
-            "- Token-id exact h<K debugging still uses `VLLM_BATCH_INVARIANT=1` in addition to `--allow-shape-drift-chunking`. Performance rows should normally leave `VLLM_BATCH_INVARIANT=0` and use math quality preservation, not bit-for-bit EAGLE3 equality, as the quality gate.",
+            "- Live h<K chunking is enabled for CV methods. Performance rows use math answer quality preservation, not bit-for-bit EAGLE3 equality, as the quality gate.",
             "- `SPECLINK_CV_ALLOW_BATCHED_PREFIX=1` allows multiple prefix chunks per scheduler step. `SPECLINK_CV_ALLOW_BATCHED_SUFFIX=1` does the same for accepted-prefix suffix chunks; without suffix batching, CV can lose most of the theoretical verifier saving to singleton suffix steps.",
-            "- Any live-chunked `cv_*` row with a failing quality gate is excluded from speedup claims. Exact-safe fallback rows are still classified as `invalid_no_live_chunking`.",
+            "- Any live-chunked `cv_*` row with a failing quality gate is excluded from speedup claims.",
             "- Sync conservative fallback rows can be exact but are not chunked verification wins. A `cv_*` row is eligible for best-CV selection only when `speedup_claim_status=valid_quality_preserving_chunked`; this means the row is a quality-preserving performance comparison, not necessarily a speedup over EAGLE3.",
-            "- When suffix verification rejects, the conservative live path drops the same-step drafter output and runs dense realignment steps before resuming speculation. These steps are reported as `dense_realign_steps` and included in `extra_tlm_forwards_per_request`.",
+            "- When suffix verification rejects, the live path discards the unverified suffix state and resumes from the accepted prefix bookkeeping.",
             "",
             "## Correctness Warnings",
             "",
@@ -2638,7 +2619,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-sizes", default="8,16,32")
     parser.add_argument(
         "--methods",
-        default="pure_vllm,eagle3_oneshot,cv_half_sync_simple,cv_half_sync_roofline,cv_half_async_simple,cv_half_async_roofline,cv_conf_sync_simple,cv_conf_sync_roofline,cv_conf_async_simple,cv_conf_async_roofline",
+        default="pure_vllm,eagle3_oneshot,cv_half_sync_simple,cv_half_sync_roofline,cv_half_async_simple,cv_half_async_roofline,cv_half_async_staged_simple",
     )
     parser.add_argument("--smoke", action="store_true", help="Override to a small one-case matrix.")
     parser.add_argument("--dry-run", action="store_true")
@@ -2792,14 +2773,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--enforce-eager", action="store_true")
     parser.add_argument(
-        "--allow-cv-cudagraph",
-        action="store_true",
-        help=(
-            "Experimental: do not force --enforce-eager for cv_* methods. "
-            "Default keeps eager mode for CV state-debug stability."
-        ),
-    )
-    parser.add_argument(
         "--disable-vllm-async-scheduling",
         action="store_true",
         help="Pass --no-async-scheduling to every vLLM serve run, not only cv_* methods.",
@@ -2857,25 +2830,13 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--allow-shape-drift-chunking",
-        action="store_true",
-        help=(
-            "Experimental: allow live h<K chunking despite verifier-shape "
-            "argmax drift evidence. Default exact-safe mode falls back to "
-            "one-shot verification."
-        ),
-    )
-    parser.add_argument("--calibration-path", default="")
-    parser.add_argument(
         "--env",
         action="append",
         default=[],
         metavar="KEY=VALUE",
         help=(
             "Extra environment variable for both vLLM and benchmark child "
-            "processes. Repeatable. Use VLLM_BATCH_INVARIANT=1 for token-id "
-            "exact h<K debugging; keep it unset/0 for quality-gated "
-            "performance runs."
+            "processes. Repeatable."
         ),
     )
     return parser.parse_args()
@@ -2890,12 +2851,6 @@ def main() -> int:
         if args.output_root.is_absolute()
         else (Path.cwd() / args.output_root).resolve()
     )
-    if args.calibration_path:
-        args.calibration_path = str(
-            Path(args.calibration_path).resolve()
-            if not Path(args.calibration_path).is_absolute()
-            else Path(args.calibration_path)
-        )
     if args.benchmark_mode == "steady_state":
         if args.max_tokens <= 0:
             raise SystemExit("--benchmark-mode steady_state requires --max-tokens > 0")

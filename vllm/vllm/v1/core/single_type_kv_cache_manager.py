@@ -313,31 +313,6 @@ class SingleTypeKVCacheManager(ABC):
         self.block_pool.free_blocks(ordered_blocks)
         self.num_cached_block.pop(request_id, None)
 
-    def truncate_blocks(self, request_id: str, num_tokens: int) -> list[int]:
-        """Free tail blocks beyond the logical token length.
-
-        This is a diagnostic rollback hook for speculative verifier probes that
-        reserved slots but then discarded their output before commit. It only
-        removes whole tail blocks; partially filled committed blocks are kept.
-        """
-        blocks = self.req_to_blocks.get(request_id)
-        if not blocks:
-            return []
-        num_required_blocks = cdiv(max(num_tokens, 0), self.block_size)
-        if num_required_blocks >= len(blocks):
-            return []
-
-        removed_blocks = blocks[num_required_blocks:]
-        del blocks[num_required_blocks:]
-        real_removed_blocks = [block for block in removed_blocks if not block.is_null]
-        if real_removed_blocks:
-            self.block_pool.free_blocks(reversed(real_removed_blocks))
-        if request_id in self.num_cached_block:
-            self.num_cached_block[request_id] = min(
-                self.num_cached_block[request_id], num_required_blocks
-            )
-        return [block.block_id for block in real_removed_blocks]
-
     @abstractmethod
     def get_num_common_prefix_blocks(self, running_request_id: str) -> int:
         """

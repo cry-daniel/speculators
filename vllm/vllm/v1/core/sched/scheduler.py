@@ -611,8 +611,10 @@ class Scheduler(SchedulerInterface):
                 self.speclink_cv_async_pending_prefix.pop(req_id, None)
 
         waiting_reqs = len(self.waiting) + len(self.skipped_waiting)
+        running_has_capacity = len(self.running) < self.max_num_running_reqs
         has_other_ready_work = (
-            len(candidate_req_ids) < len(self.running) or waiting_reqs > 0
+            len(candidate_req_ids) < len(self.running)
+            or (running_has_capacity and waiting_reqs > 0)
         )
         if self.speclink_cv_config.force_decode_isolation:
             ordered_candidates = sorted(
@@ -777,6 +779,7 @@ class Scheduler(SchedulerInterface):
 
         req_to_new_blocks: dict[str, KVCacheBlocks] = {}
         num_scheduled_tokens: dict[str, int] = {}
+        speclink_cv_token_budget_debits: dict[str, int] = {}
         token_budget = self.max_num_scheduled_tokens
         if self._pause_state == PauseState.PAUSED_ALL:
             # Do not schedule any requests when paused.
@@ -1489,27 +1492,6 @@ class Scheduler(SchedulerInterface):
             num_new_tokens = min(
                 num_new_tokens, self.max_model_len - 1 - request.num_computed_tokens
             )
-            num_new_tokens_for_slots = num_new_tokens
-            speclink_cv_token_budget_debit = num_new_tokens
-            if speclink_cv_prefix_plan is not None:
-                # SpecLink-CV reduces target-model compute by scheduling only a
-                # prefix verifier chunk, but it still reserves the full one-shot
-                # draft slot range. Keeping the physical block layout aligned
-                # with EAGLE3 one-shot avoids later verifier drift from block
-                # allocation differences while preserving suffix compute saving.
-                # It must also charge the scheduler token budget as if the full
-                # one-shot verifier ran; otherwise the saved prefix tokens can
-                # admit extra waiting requests into the same TLM batch, changing
-                # active-batch shape and low-margin greedy decisions.
-                num_new_tokens_for_slots = min(
-                    num_new_tokens + len(speclink_cv_prefix_plan["suffix"]),
-                    self.max_model_len - 1 - request.num_computed_tokens,
-                )
-                speclink_cv_token_budget_debit = min(
-                    max(num_new_tokens, num_new_tokens_for_slots),
-                    token_budget,
-                )
-
             # Schedule encoder inputs.
             encoder_inputs_to_schedule = None
             external_load_encoder_input: list[int] = []
@@ -1551,6 +1533,23 @@ class Scheduler(SchedulerInterface):
                 req_index += 1
                 continue
 
+            num_new_tokens_for_slots = num_new_tokens
+            speclink_cv_token_budget_debit = num_new_tokens
+            if speclink_cv_prefix_plan is not None:
+                # SpecLink-CV reduces target-model compute by scheduling only a
+                # prefix verifier chunk, but it still reserves the full one-shot
+                # draft slot range. Compute the reservation after encoder and
+                # Mamba trimming so the KV-slot request and token-budget debit
+                # reflect the tokens this scheduler step can actually run.
+                num_new_tokens_for_slots = min(
+                    num_new_tokens + len(speclink_cv_prefix_plan["suffix"]),
+                    self.max_model_len - 1 - request.num_computed_tokens,
+                )
+                speclink_cv_token_budget_debit = min(
+                    max(num_new_tokens, num_new_tokens_for_slots),
+                    token_budget,
+                )
+
             # Schedule newly needed KV blocks for the request.
             with record_function_or_nullcontext("schedule: allocate_slots"):
                 while True:
@@ -1575,7 +1574,12 @@ class Scheduler(SchedulerInterface):
                         if preempted_req in scheduled_running_reqs:
                             preempted_req_id = preempted_req.request_id
                             scheduled_running_reqs.remove(preempted_req)
-                            token_budget += num_scheduled_tokens.pop(preempted_req_id)
+                            scheduled_tokens = num_scheduled_tokens.pop(
+                                preempted_req_id
+                            )
+                            token_budget += speclink_cv_token_budget_debits.pop(
+                                preempted_req_id, scheduled_tokens
+                            )
                             req_to_new_blocks.pop(preempted_req_id)
                             scheduled_spec_decode_tokens.pop(preempted_req_id, None)
                             preempted_encoder_inputs = scheduled_encoder_inputs.pop(
@@ -1608,6 +1612,9 @@ class Scheduler(SchedulerInterface):
             request_id = request.request_id
             req_to_new_blocks[request_id] = new_blocks
             num_scheduled_tokens[request_id] = num_new_tokens
+            speclink_cv_token_budget_debits[request_id] = (
+                speclink_cv_token_budget_debit
+            )
             token_budget -= speclink_cv_token_budget_debit
             if speclink_cv_token_budget_debit > num_new_tokens:
                 speclink_cv_shadow_token_budget_extra += (

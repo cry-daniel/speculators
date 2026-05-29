@@ -444,10 +444,7 @@ def rejection_sample(
 
     if not sampling_metadata.all_random:
         # Rejection sampling for greedy sampling requests.
-        target_argmax = Sampler.greedy_sample_with_preferred_tokens(
-            target_logits,
-            draft_token_ids,
-        )
+        target_argmax = target_logits.argmax(dim=-1)
         rejection_greedy_sample_kernel[(batch_size,)](
             output_token_ids,
             cu_num_draft_tokens,

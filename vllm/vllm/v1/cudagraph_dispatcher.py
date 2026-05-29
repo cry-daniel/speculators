@@ -407,7 +407,12 @@ class CudagraphDispatcher:
         if CUDAGraphMode.PIECEWISE in allowed_modes:
             # also check if the relaxed key exists for more "general"
             # piecewise cudagraph
-            batch_desc_to_check = replace(batch_desc, num_reqs=None, uniform=False)
+            batch_desc_to_check = replace(
+                batch_desc,
+                num_reqs=None,
+                uniform=False,
+                uniform_decode_query_len=None,
+            )
             if batch_desc_to_check in self.cudagraph_keys[CUDAGraphMode.PIECEWISE]:
                 return CUDAGraphMode.PIECEWISE, batch_desc_to_check
 

@@ -61,7 +61,7 @@ class SpecLinkCVRuntimeConfig:
     allow_batched_prefix: bool = False
     allow_batched_suffix: bool = False
     global_batch_barrier: bool = False
-    allow_shape_drift_chunking: bool = False
+    allow_shape_drift_chunking: bool = True
     suffix_replay_one_shot_shape: bool = False
     confirm_prefix_reject_one_shot: bool = False
     confirm_prefix_accept_one_shot: bool = False
@@ -77,7 +77,7 @@ class SpecLinkCVRuntimeConfig:
     prefix_full_cudagraph: bool = False
     staged_drafting: bool = False
     force_decode_isolation: bool = False
-    dense_realign_steps: int = -1
+    dense_realign_steps: int = 0
     prefix_reject_dense_realign_steps: int = 0
     candidate_chunks: tuple[int | str, ...] = (1, 2, 4, 6, 8, "full")
     default_half_policy: str = "floor"
@@ -103,7 +103,7 @@ class SpecLinkCVRuntimeConfig:
     def from_env(cls) -> "SpecLinkCVRuntimeConfig":
         return cls(
             enable=_env_bool("SPECLINK_CV_ENABLE"),
-            confidence_sizing=_env_bool("SPECLINK_CV_CONFIDENCE_SIZING"),
+            confidence_sizing=False,
             async_queue=_env_bool("SPECLINK_CV_ASYNC_QUEUE"),
             roofline_packing=_env_bool("SPECLINK_CV_ROOFLINE_PACKING")
             or _env_bool("SPECLINK_CV_ROOFLLINE_PACKING"),
@@ -112,59 +112,27 @@ class SpecLinkCVRuntimeConfig:
                 "SPECLINK_CV_ALLOW_BATCHED_SUFFIX",
                 _env_bool("SPECLINK_CV_ALLOW_BATCHED_PREFIX"),
             ),
-            global_batch_barrier=_env_bool("SPECLINK_CV_GLOBAL_BATCH_BARRIER"),
+            global_batch_barrier=False,
             allow_shape_drift_chunking=_env_bool(
-                "SPECLINK_CV_ALLOW_SHAPE_DRIFT_CHUNKING"
+                "SPECLINK_CV_ALLOW_SHAPE_DRIFT_CHUNKING", True
             ),
-            suffix_replay_one_shot_shape=_env_bool(
-                "SPECLINK_CV_SUFFIX_REPLAY_ONE_SHOT_SHAPE", False
-            ),
-            confirm_prefix_reject_one_shot=_env_bool(
-                "SPECLINK_CV_CONFIRM_PREFIX_REJECT_ONE_SHOT"
-            ),
-            confirm_prefix_accept_one_shot=_env_bool(
-                "SPECLINK_CV_CONFIRM_PREFIX_ACCEPT_ONE_SHOT"
-            ),
-            confirmation_full_active_set=_env_bool(
-                "SPECLINK_CV_CONFIRMATION_FULL_ACTIVE_SET"
-            ),
-            lockstep_iteration_barrier=_env_bool(
-                "SPECLINK_CV_LOCKSTEP_ITERATION_BARRIER"
-            ),
-            prefix_probe_block_rollback=_env_bool(
-                "SPECLINK_CV_PREFIX_PROBE_BLOCK_ROLLBACK"
-            ),
-            prefix_low_margin_fallback_threshold=_env_float(
-                "SPECLINK_CV_PREFIX_LOW_MARGIN_FALLBACK_THRESHOLD", 0.0
-            ),
-            batch_wide_low_margin_fallback=_env_bool(
-                "SPECLINK_CV_BATCH_WIDE_LOW_MARGIN_FALLBACK"
-            ),
-            batch_wide_prefix_reject_fallback=_env_bool(
-                "SPECLINK_CV_BATCH_WIDE_PREFIX_REJECT_FALLBACK"
-            ),
-            recompute_committed_prefix=_env_bool(
-                "SPECLINK_CV_RECOMPUTE_COMMITTED_PREFIX"
-            ),
-            allow_batched_dense_realign=_env_bool(
-                "SPECLINK_CV_ALLOW_BATCHED_DENSE_REALIGN"
-            ),
-            prefix_no_kv_write=_env_bool(
-                "SPECLINK_CV_PREFIX_NO_KV_WRITE"
-            ),
-            prefix_full_cudagraph=_env_bool(
-                "SPECLINK_CV_PREFIX_FULL_CUDAGRAPH"
-            ),
+            suffix_replay_one_shot_shape=False,
+            confirm_prefix_reject_one_shot=False,
+            confirm_prefix_accept_one_shot=False,
+            confirmation_full_active_set=False,
+            lockstep_iteration_barrier=False,
+            prefix_probe_block_rollback=False,
+            prefix_low_margin_fallback_threshold=0.0,
+            batch_wide_low_margin_fallback=False,
+            batch_wide_prefix_reject_fallback=False,
+            recompute_committed_prefix=False,
+            allow_batched_dense_realign=False,
+            prefix_no_kv_write=False,
+            prefix_full_cudagraph=False,
             staged_drafting=_env_bool("SPECLINK_CV_STAGED_DRAFTING"),
-            force_decode_isolation=_env_bool(
-                "SPECLINK_CV_FORCE_DECODE_ISOLATION"
-            ),
-            dense_realign_steps=_env_int(
-                "SPECLINK_CV_DENSE_REALIGN_STEPS", -1
-            ),
-            prefix_reject_dense_realign_steps=_env_int(
-                "SPECLINK_CV_PREFIX_REJECT_DENSE_REALIGN_STEPS", 0
-            ),
+            force_decode_isolation=False,
+            dense_realign_steps=0,
+            prefix_reject_dense_realign_steps=0,
             candidate_chunks=_parse_candidates(
                 os.environ.get(
                     "SPECLINK_CV_CANDIDATE_CHUNKS", "1,2,4,6,8,full"
@@ -183,21 +151,15 @@ class SpecLinkCVRuntimeConfig:
             ),
             max_queue_wait_ms=_env_float("SPECLINK_CV_MAX_QUEUE_WAIT_MS", 2.0),
             util_threshold=_env_float("SPECLINK_CV_UTIL_THRESHOLD", 0.6),
-            calibration_path=os.environ.get(
-                "SPECLINK_CV_CALIBRATION_PATH", ""
-            ).strip(),
+            calibration_path="",
             log_jsonl=os.environ.get("SPECLINK_CV_LOG_JSONL", "").strip(),
             profile_jsonl=os.environ.get("SPECLINK_CV_PROFILE_JSONL", "").strip(),
-            debug_dump=_env_bool("SPECLINK_CV_DEBUG_DUMP"),
-            kv_debug_tail_tokens=_env_int("SPECLINK_CV_KV_DEBUG_TAIL_TOKENS", 0),
-            kv_debug_max_layers=_env_int("SPECLINK_CV_KV_DEBUG_MAX_LAYERS", 0),
-            kv_debug_row_index=_env_int("SPECLINK_CV_KV_DEBUG_ROW_INDEX", -1),
-            kv_debug_min_output_tokens=_env_int(
-                "SPECLINK_CV_KV_DEBUG_MIN_OUTPUT_TOKENS", -1
-            ),
-            kv_debug_max_output_tokens=_env_int(
-                "SPECLINK_CV_KV_DEBUG_MAX_OUTPUT_TOKENS", -1
-            ),
+            debug_dump=False,
+            kv_debug_tail_tokens=0,
+            kv_debug_max_layers=0,
+            kv_debug_row_index=-1,
+            kv_debug_min_output_tokens=-1,
+            kv_debug_max_output_tokens=-1,
             log_max_events=_env_int("SPECLINK_CV_LOG_MAX_EVENTS", 1_000),
             profile_max_events=_env_int("SPECLINK_CV_PROFILE_MAX_EVENTS", 500),
         )
@@ -222,10 +184,8 @@ class SpecLinkCVRuntimeConfig:
     def effective_dense_realign_steps(self, num_spec_tokens: int) -> int:
         """Return dense TLM steps after a rejected suffix verifier chunk.
 
-        The default (-1) preserves the current conservative policy of using K
-        dense steps. A value of 0 is a diagnostic mode that disables the suffix
-        realignment guard so live smoke tests can isolate whether this guard is
-        the source of token drift.
+        The default is 0 because the performance path relies on discarding
+        unverified suffix state instead of forcing extra dense verifier steps.
         """
         if self.dense_realign_steps >= 0:
             return self.dense_realign_steps

@@ -29,10 +29,7 @@ ANALYZE_ONLY="${ANALYZE_ONLY:-0}"
 SKIP_UNIT_TESTS="${SKIP_UNIT_TESTS:-0}"
 DISABLE_VLLM_ASYNC_SCHEDULING="${DISABLE_VLLM_ASYNC_SCHEDULING:-1}"
 ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
-BATCH_INVARIANT="${BATCH_INVARIANT:-0}"
-ALLOW_SHAPE_DRIFT_CHUNKING="${ALLOW_SHAPE_DRIFT_CHUNKING:-1}"
 ALLOW_BATCHED_PREFIX_VERIFICATION="${ALLOW_BATCHED_PREFIX_VERIFICATION:-1}"
-DENSE_REALIGN_STEPS="${DENSE_REALIGN_STEPS:-0}"
 ALLOW_BATCHED_SUFFIX="${ALLOW_BATCHED_SUFFIX:-${ALLOW_BATCHED_PREFIX_VERIFICATION}}"
 
 if [[ "${BENCHMARK_MODE}" == "steady_state" && "${MAX_TOKENS}" == "0" ]]; then
@@ -52,16 +49,9 @@ fi
 if [[ "${CASE_LIMIT}" != "0" ]]; then
   extra_args+=(--case-limit "${CASE_LIMIT}")
 fi
-if [[ "${ALLOW_SHAPE_DRIFT_CHUNKING}" == "1" ]]; then
-  extra_args+=(--allow-shape-drift-chunking)
-fi
 if [[ "${ALLOW_BATCHED_PREFIX_VERIFICATION}" == "1" ]]; then
   extra_args+=(--allow-batched-prefix-verification)
 fi
-if [[ "${BATCH_INVARIANT}" == "1" ]]; then
-  extra_args+=(--env VLLM_BATCH_INVARIANT=1)
-fi
-extra_args+=(--env "SPECLINK_CV_DENSE_REALIGN_STEPS=${DENSE_REALIGN_STEPS}")
 extra_args+=(--env "SPECLINK_CV_ALLOW_BATCHED_SUFFIX=${ALLOW_BATCHED_SUFFIX}")
 if [[ "${STEADY_STATE_IGNORE_EOS}" == "0" ]]; then
   extra_args+=(--no-steady-state-ignore-eos)
@@ -85,7 +75,7 @@ cd "${REPO_ROOT}"
   --datasets math,mtbench \
   --ks 8,12 \
   --batch-sizes 8,16,32 \
-  --methods pure_vllm,eagle3_oneshot,cv_half_sync_simple,cv_half_sync_roofline,cv_half_async_simple,cv_half_async_roofline,cv_conf_sync_simple,cv_conf_sync_roofline,cv_conf_async_simple,cv_conf_async_roofline \
+  --methods pure_vllm,eagle3_oneshot,cv_half_sync_simple,cv_half_sync_roofline,cv_half_async_simple,cv_half_async_roofline,cv_half_async_staged_simple \
   --max-requests "${MAX_REQUESTS}" \
   --max-tokens "${MAX_TOKENS}" \
   --steady-state-warmup-s "${STEADY_STATE_WARMUP_S}" \

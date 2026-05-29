@@ -56,36 +56,6 @@ def first_non_null(values: pd.Series) -> Any:
     return None
 
 
-def compute_predicted_useful_accepted_from_prefix_probs(
-    probs: pd.Series,
-    max_tokens: int,
-) -> float:
-    if max_tokens <= 0:
-        return 0.0
-    if probs is None:
-        return float("nan")
-    values = probs.tolist()[:max_tokens]
-    if not values:
-        return float("nan")
-
-    expected_accepted = 0.0
-    survival = 1.0
-    for value in values:
-        if value is None or not np.isfinite(float(value)):
-            return float("nan")
-        p = float(value)
-        if p <= 0.0:
-            break
-        if p >= 1.0:
-            survival *= 1.0
-        else:
-            survival *= max(0.0, min(1.0, p))
-        expected_accepted += survival
-
-    useful = 1.0 + expected_accepted
-    return min(max(useful, 0.0), float(max_tokens))
-
-
 def normalized_dataset(value: Any) -> str:
     if isinstance(value, str) and value:
         return value
@@ -120,7 +90,6 @@ def load_trace(input_root: Path) -> pd.DataFrame:
         "num_spec_tokens",
         "num_accepted_in_step",
         "num_scheduled_draft_tokens",
-        "draft_selected_prob",
         "first_reject_position",
         "dataset_index",
         "prompt_id",
@@ -159,21 +128,6 @@ def make_step_frame(token_df: pd.DataFrame) -> pd.DataFrame:
         request_order = first_non_null(group.get("dataset_index", pd.Series(dtype=float)))
         if request_order is None or not np.isfinite(float(request_order)):
             request_order = first_non_null(group.get("prompt_id", pd.Series(dtype=float)))
-
-        prob_series = group["draft_selected_prob"] if "draft_selected_prob" in group else pd.Series(dtype=float)
-        scheduled_limit = int(max(scheduled, 0))
-        token_limit = min(scheduled_limit, int(k))
-        pred_useful_accepted = compute_predicted_useful_accepted_from_prefix_probs(
-            prob_series.head(token_limit),
-            token_limit,
-        )
-        if np.isfinite(pred_useful_accepted):
-            pred_num_accepted = pred_useful_accepted
-            pred_redundancy = (int(k) - pred_useful_accepted) / int(k) if int(k) > 0 else float("nan")
-        else:
-            pred_num_accepted = float("nan")
-            pred_redundancy = float("nan")
-
         rows.append(
             {
                 "dataset_label": str(dataset_label),
@@ -188,8 +142,6 @@ def make_step_frame(token_df: pd.DataFrame) -> pd.DataFrame:
                 "num_accepted": accepted,
                 "accept_fraction": accepted / scheduled if scheduled else float("nan"),
                 "first_reject_position": first_reject_int,
-                "pred_num_accepted": pred_num_accepted,
-                "pred_redundancy": pred_redundancy,
                 "context_len": first_non_null(group.get("context_len", pd.Series(dtype=float))),
                 "generated_len_so_far": first_non_null(group.get("generated_len_so_far", pd.Series(dtype=float))),
             }

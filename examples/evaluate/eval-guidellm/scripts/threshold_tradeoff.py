@@ -207,6 +207,7 @@ def summarize_group(steps: list[DecodeStep], threshold: float) -> dict[str, Any]
     if n == 0:
         raise ValueError("Cannot summarize an empty group")
     error_count = 0
+    mismatch_count = 0
     pred_sum = 0.0
     efficiency_sum = 0.0
     actual_sum = 0.0
@@ -215,6 +216,8 @@ def summarize_group(steps: list[DecodeStep], threshold: float) -> dict[str, Any]
         pred_sum += pred
         efficiency_sum += pred / max(step.num_spec_tokens, 1)
         actual_sum += step.actual_accept_tokens
+        if pred != step.actual_accept_tokens:
+            mismatch_count += 1
         if pred > step.actual_accept_tokens:
             error_count += 1
     first = steps[0]
@@ -226,7 +229,8 @@ def summarize_group(steps: list[DecodeStep], threshold: float) -> dict[str, Any]
         "num_spec_tokens": first.num_spec_tokens,
         "threshold": threshold,
         "num_decode_steps": n,
-        "prediction_error_probability": error_count / n,
+        "error_probability": error_count / n,
+        "mismatch_probability": mismatch_count / n,
         "compute_efficiency": efficiency_sum / n,
         "mean_pred_tokens": pred_sum / n,
         "mean_actual_accept_tokens": actual_sum / n,
@@ -250,13 +254,11 @@ def pareto_flags(rows: list[dict[str, Any]]) -> None:
                 if other is row:
                     continue
                 no_worse = (
-                    other["prediction_error_probability"]
-                    <= row["prediction_error_probability"]
+                    other["error_probability"] <= row["error_probability"]
                     and other["compute_efficiency"] >= row["compute_efficiency"]
                 )
                 strictly_better = (
-                    other["prediction_error_probability"]
-                    < row["prediction_error_probability"]
+                    other["error_probability"] < row["error_probability"]
                     or other["compute_efficiency"] > row["compute_efficiency"]
                 )
                 if no_worse and strictly_better:
@@ -299,7 +301,8 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "num_spec_tokens",
         "threshold",
         "num_decode_steps",
-        "prediction_error_probability",
+        "error_probability",
+        "mismatch_probability",
         "compute_efficiency",
         "mean_pred_tokens",
         "mean_actual_accept_tokens",
@@ -341,7 +344,7 @@ def draw_tradeoff(path: Path, rows: list[dict[str, Any]], workloads: list[str]) 
     draw.text((margin_l, 24), "DLM confidence threshold tradeoff", fill="#111111", font=font())
     draw.text(
         (margin_l, 48),
-        "x: prediction error P(pred > actual), y: compute efficiency E(pred / K). "
+        "x: overrun risk P(pred > actual), y: compute efficiency E(pred / K). "
         "Hollow points are Pareto-optimal thresholds.",
         fill="#333333",
         font=font(),
@@ -383,12 +386,12 @@ def draw_tradeoff(path: Path, rows: list[dict[str, Any]], workloads: list[str]) 
             for k in sorted({int(row["num_spec_tokens"]) for row in subset}):
                 group = sorted(
                     [row for row in subset if int(row["num_spec_tokens"]) == k],
-                    key=lambda row: float(row["prediction_error_probability"]),
+                    key=lambda row: float(row["error_probability"]),
                 )
                 color = K_COLORS.get(k, "#0b7285")
                 points = [
                     (
-                        sx(px0, px1, float(row["prediction_error_probability"])),
+                        sx(px0, px1, float(row["error_probability"])),
                         sy(py0, py1, float(row["compute_efficiency"])),
                     )
                     for row in group
@@ -417,7 +420,7 @@ def draw_tradeoff(path: Path, rows: list[dict[str, Any]], workloads: list[str]) 
                     font=font(),
                 )
             if row_idx == panel_rows - 1:
-                draw.text((px0 + 60, y1 - 18), "prediction error", fill="#111111", font=font())
+                draw.text((px0 + 80, y1 - 18), "overrun risk", fill="#111111", font=font())
             if col_idx == 0:
                 draw.text((x0 + 2, py0 - 18), "compute efficiency", fill="#111111", font=font())
     image.save(path)
@@ -431,7 +434,8 @@ def write_report(root: Path, rows: list[dict[str, Any]], thresholds: list[float]
         "",
         "Definitions:",
         "",
-        "- `prediction_error_probability`: `P(pred_tokens > actual_accept_tokens)`.",
+        "- `prediction overrun`: `P(pred_tokens > actual_accept_tokens)`.",
+        "- `prediction mismatch`: `P(pred_tokens != actual_accept_tokens)`.",
         "- `compute efficiency`: `E[pred_tokens / K]`.",
         "- Pareto optimal means no other threshold has both lower-or-equal error and higher-or-equal efficiency with one strict improvement.",
         "",
@@ -450,12 +454,13 @@ def write_report(root: Path, rows: list[dict[str, Any]], thresholds: list[float]
             for k in sorted({int(row["num_spec_tokens"]) for row in case_rows}):
                 group = sorted(
                     [row for row in case_rows if int(row["num_spec_tokens"]) == k],
-                    key=lambda row: (float(row["prediction_error_probability"]), -float(row["compute_efficiency"])),
+                    key=lambda row: (float(row["error_probability"]), -float(row["compute_efficiency"])),
                 )
                 parts = [
                     (
                         f"t={row['threshold']:g} "
-                        f"err={row['prediction_error_probability']:.3f} "
+                        f"over={row['error_probability']:.3f} "
+                        f"mismatch={row['mismatch_probability']:.3f} "
                         f"eff={row['compute_efficiency']:.3f}"
                     )
                     for row in group
@@ -536,15 +541,9 @@ def self_test() -> None:
         analyze(root, out, [0.5, 0.05], ["math"], ["qwen3_8b"], ["eagle3"], [4])
         tradeoff = list(csv.DictReader((out / "threshold_tradeoff.csv").open()))
         by_threshold = {float(row["threshold"]): row for row in tradeoff}
-        assert (
-            abs(float(by_threshold[0.5]["prediction_error_probability"]) - 0.0)
-            < 1e-9
-        )
+        assert abs(float(by_threshold[0.5]["error_probability"]) - 0.0) < 1e-9
         assert abs(float(by_threshold[0.5]["compute_efficiency"]) - 0.625) < 1e-9
-        assert (
-            abs(float(by_threshold[0.05]["prediction_error_probability"]) - 0.5)
-            < 1e-9
-        )
+        assert abs(float(by_threshold[0.05]["error_probability"]) - 0.5) < 1e-9
         assert (out / "pareto_thresholds.csv").exists()
         assert (out / "figures" / "threshold_tradeoff.png").exists()
     print("[INFO] self-test passed")

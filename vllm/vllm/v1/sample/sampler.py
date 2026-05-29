@@ -2,12 +2,9 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """A layer that samples the next tokens from the model's outputs."""
 
-import os
-
 import torch
 import torch.nn as nn
 
-import vllm.envs as envs
 from vllm.config.model import LogprobsMode
 from vllm.utils.platform_utils import is_pin_memory_available
 from vllm.v1.outputs import LogprobsTensors, SamplerOutput
@@ -19,26 +16,6 @@ from vllm.v1.sample.ops.topk_topp_sampler import TopKTopPSampler
 from vllm.v1.worker.gpu.sample.logprob import compute_token_logprobs
 
 _SAMPLING_EPS = 1e-5
-
-
-def _speclink_cv_draft_accept_eps() -> float:
-    value = os.getenv("SPECLINK_CV_DRAFT_ACCEPT_EPS", "0").strip()
-    if not value:
-        return 0.0
-    try:
-        return max(0.0, float(value))
-    except ValueError:
-        return 0.0
-
-
-def _speclink_cv_greedy_eps() -> float:
-    value = os.getenv("SPECLINK_CV_GREEDY_EPS", "0").strip()
-    if not value:
-        return 0.0
-    try:
-        return max(0.0, float(value))
-    except ValueError:
-        return 0.0
 
 
 class Sampler(nn.Module):
@@ -250,50 +227,7 @@ class Sampler(nn.Module):
 
     @staticmethod
     def greedy_sample(logits: torch.Tensor) -> torch.Tensor:
-        if envs.VLLM_BATCH_INVARIANT:
-            # CUDA reductions do not provide a stable tie order across all
-            # batch shapes. Make exact greedy ties deterministic in the mode
-            # used by SpecLink-CV correctness gates.
-            max_values = logits.max(dim=-1, keepdim=True).values
-            greedy_eps = _speclink_cv_greedy_eps()
-            token_ids = torch.arange(
-                logits.shape[-1], device=logits.device, dtype=torch.long
-            )
-            tied_token_ids = torch.where(
-                logits >= max_values - greedy_eps
-                if greedy_eps > 0
-                else logits == max_values,
-                token_ids.view(1, -1),
-                logits.shape[-1],
-            )
-            return tied_token_ids.min(dim=-1).values.view(-1)
         return logits.argmax(dim=-1).view(-1)
-
-    @staticmethod
-    def greedy_sample_with_preferred_tokens(
-        logits: torch.Tensor,
-        preferred_token_ids: torch.Tensor,
-    ) -> torch.Tensor:
-        sampled = Sampler.greedy_sample(logits)
-        if not envs.VLLM_BATCH_INVARIANT:
-            return sampled
-        preferred = preferred_token_ids.to(device=logits.device, dtype=torch.long).view(
-            -1
-        )
-        max_values = logits.max(dim=-1).values
-        preferred_logits = logits.gather(-1, preferred.view(-1, 1)).view(-1)
-        draft_accept_eps = _speclink_cv_draft_accept_eps()
-        if draft_accept_eps <= 0:
-            # In batch-invariant correctness mode, an exact target-logit tie has
-            # no unique greedy token. Prefer the proposed draft token only when
-            # it is exactly tied for the row max; non-tie near matches still
-            # require SPECLINK_CV_DRAFT_ACCEPT_EPS.
-            return torch.where(preferred_logits == max_values, preferred, sampled)
-        return torch.where(
-            preferred_logits >= max_values - draft_accept_eps,
-            preferred,
-            sampled,
-        )
 
     def sample(
         self,
