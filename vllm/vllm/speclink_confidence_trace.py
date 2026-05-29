@@ -32,11 +32,20 @@ _verify_context: ContextVar[dict[str, Any] | None] = ContextVar(
 
 _pending: defaultdict[str, deque[list[dict[str, Any]]]] = defaultdict(deque)
 _step_ids: defaultdict[str, int] = defaultdict(int)
+_latest_draft_selected_probs: dict[str, list[float]] = {}
 _lock = threading.Lock()
 
 
 def enabled() -> bool:
     return os.getenv("SPECLINK_TRACE_CONFIDENCE", "0") in _TRUTHY
+
+
+def capture_enabled() -> bool:
+    cv_confidence = (
+        os.getenv("SPECLINK_CV_ENABLE", "0") in _TRUTHY
+        and os.getenv("SPECLINK_CV_CONFIDENCE_SIZING", "0") in _TRUTHY
+    )
+    return enabled() or cv_confidence
 
 
 def _method(default: str = "") -> str:
@@ -77,7 +86,7 @@ def begin_propose_context(
     num_spec_tokens: int,
     method: str = "",
 ) -> Any:
-    if not enabled():
+    if not capture_enabled():
         return None
     return _propose_context.set(
         {
@@ -142,7 +151,7 @@ def record_draft_features(
     method: str = "",
 ) -> None:
     """Store draft-token confidence features until labels are available."""
-    if not enabled():
+    if not capture_enabled():
         return
     ctx = _propose_context.get()
     if ctx is None or not logits_by_position:
@@ -247,7 +256,23 @@ def record_draft_features(
                         "timestamp": now,
                     }
                 )
-            _pending[req_id].append(records)
+            _latest_draft_selected_probs[req_id] = [
+                float(record["draft_selected_prob"]) for record in records
+            ]
+            if enabled():
+                _pending[req_id].append(records)
+
+
+def get_latest_draft_selected_probs(req_ids: list[str]) -> list[list[float]] | None:
+    if not capture_enabled():
+        return None
+    with _lock:
+        values = [
+            list(_latest_draft_selected_probs.get(req_id, ())) for req_id in req_ids
+        ]
+    if not any(values):
+        return None
+    return values
 
 
 def _write_records(records: list[dict[str, Any]]) -> None:

@@ -443,6 +443,12 @@ class KVCacheManager:
         """
         self.coordinator.free(request.request_id)
 
+    def truncate_blocks(
+        self, request_id: str, num_tokens: int
+    ) -> tuple[list[int], ...]:
+        """Free whole tail blocks beyond a request's logical token length."""
+        return self.coordinator.truncate_blocks(request_id, num_tokens)
+
     def remove_skipped_blocks(
         self, request_id: str, total_computed_tokens: int
     ) -> None:

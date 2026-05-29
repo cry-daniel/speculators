@@ -221,6 +221,10 @@ class DraftTokenIds:
     req_ids: list[str]
     # num_reqs x num_draft_tokens
     draft_token_ids: list[list[int]]
+    # Optional num_reqs x num_draft_tokens proposal-time confidence proxy.
+    # For SpecLink-CV this is the selected draft token probability from the
+    # draft model, used as an uncalibrated local acceptance estimate.
+    draft_token_probs: list[list[float]] | None = None
 
 
 def make_empty_encoder_model_runner_output(

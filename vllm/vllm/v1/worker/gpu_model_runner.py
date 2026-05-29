@@ -111,11 +111,18 @@ from vllm.speclink_breakdown import (
     end_verify_detail,
     snapshot_verify_detail,
 )
+from vllm.speclink_cv import (
+    SpecLinkCVRuntimeConfig,
+    append_event as speclink_cv_append_event,
+    append_profile as speclink_cv_append_profile,
+    half_chunk as speclink_cv_half_chunk,
+)
 from vllm.speclink_confidence_trace import (
     begin_propose_context as speclink_trace_begin_propose_context,
     begin_verify_context as speclink_trace_begin_verify_context,
     end_propose_context as speclink_trace_end_propose_context,
     end_verify_context as speclink_trace_end_verify_context,
+    get_latest_draft_selected_probs as speclink_trace_get_latest_probs,
 )
 from vllm.tasks import GenerationTask, PoolingTask, SupportedTask
 from vllm.tracing import instrument
@@ -235,6 +242,30 @@ logger = init_logger(__name__)
 AttnMetadataDict: TypeAlias = dict[str, AttentionMetadata]
 # list when ubatching is enabled
 PerLayerAttnMetadata: TypeAlias = list[AttnMetadataDict] | AttnMetadataDict
+
+
+def _speclink_cv_request_order_key(request_id: str) -> tuple[int, str]:
+    raw_ordinal = request_id.split("-", 1)[0]
+    if raw_ordinal.isdigit():
+        return int(raw_ordinal), request_id
+    return 2**31 - 1, request_id
+
+
+def _speclink_cv_sort_active_req_ids(
+    req_ids: list[str], scheduled_spec_req_ids: set[str]
+) -> list[str]:
+    original_index = {req_id: index for index, req_id in enumerate(req_ids)}
+    return sorted(
+        req_ids,
+        key=lambda req_id: (
+            0 if req_id in scheduled_spec_req_ids else 1,
+            (
+                _speclink_cv_request_order_key(req_id)
+                if req_id in scheduled_spec_req_ids
+                else (original_index[req_id], req_id)
+            ),
+        ),
+    )
 
 
 # Wrapper for ModelRunnerOutput to support overlapped execution.
@@ -927,6 +958,8 @@ class GPUModelRunner(
 
         # Cached outputs.
         self._draft_token_ids: list[list[int]] | torch.Tensor | None = None
+        self._draft_token_ids_width: int | None = None
+        self._speclink_cv_empty_draft_req_ids: list[str] | None = None
         # N-gram GPU path: async D2H buffer/event for per-request valid draft counts.
         self._num_valid_draft_tokens: torch.Tensor | None = None
         self._num_valid_draft_tokens_cpu: torch.Tensor | None = None
@@ -1154,6 +1187,60 @@ class GPUModelRunner(
                 self.input_batch,
                 scheduler_output,
                 decode_threshold=self.reorder_batch_threshold,
+            )
+
+    def _maybe_reorder_speclink_cv_barrier_batch(
+        self, scheduler_output: "SchedulerOutput"
+    ) -> None:
+        speclink_cv_config = SpecLinkCVRuntimeConfig.from_env()
+        if (
+            not speclink_cv_config.enable
+            or not speclink_cv_config.global_batch_barrier
+        ):
+            return
+
+        scheduled_spec_req_ids = set(
+            scheduler_output.scheduled_spec_decode_tokens.keys()
+        )
+        dense_realign_req_ids = set(scheduler_output.speclink_cv_skip_drafter_req_ids)
+        should_reorder_dense_realign = (
+            speclink_cv_config.allow_batched_dense_realign
+            and not scheduled_spec_req_ids
+            and bool(dense_realign_req_ids)
+        )
+        if len(scheduled_spec_req_ids) <= 1 and not should_reorder_dense_realign:
+            return
+
+        current_req_ids = list(self.input_batch.req_ids)
+        if should_reorder_dense_realign:
+            target_req_ids = _speclink_cv_sort_active_req_ids(
+                current_req_ids, set(current_req_ids)
+            )
+            reorder_reason = "dense_realign_request_ordinal_row_alignment"
+        else:
+            target_req_ids = _speclink_cv_sort_active_req_ids(
+                current_req_ids, scheduled_spec_req_ids
+            )
+            reorder_reason = "request_ordinal_row_alignment"
+        if target_req_ids == current_req_ids:
+            return
+
+        for target_index, req_id in enumerate(target_req_ids):
+            current_index = self.input_batch.req_id_to_index[req_id]
+            if current_index != target_index:
+                self.input_batch.swap_states(current_index, target_index)
+
+        if speclink_cv_config.debug_dump:
+            speclink_cv_append_event(
+                speclink_cv_config,
+                {
+                    "event": "worker_global_batch_barrier_reordered",
+                    "reason": reorder_reason,
+                    "before_req_ids": current_req_ids,
+                    "after_req_ids": list(self.input_batch.req_ids),
+                    "scheduled_spec_req_ids": sorted(scheduled_spec_req_ids),
+                    "dense_realign_req_ids": sorted(dense_realign_req_ids),
+                },
             )
 
     def _init_kv_zero_meta(self) -> None:
@@ -1499,6 +1586,7 @@ class GPUModelRunner(
         self.input_batch.condense()
         # Allow attention backend to reorder the batch, potentially
         self._may_reorder_batch(scheduler_output)
+        self._maybe_reorder_speclink_cv_barrier_batch(scheduler_output)
         # Refresh batch metadata with any pending updates.
         self.input_batch.refresh_metadata()
 
@@ -3493,6 +3581,1230 @@ class GPUModelRunner(
         )
         return sampler_output
 
+    def _apply_speclink_cv_prefix_bonus_mask(
+        self,
+        sampler_output: SamplerOutput,
+        scheduler_output: "SchedulerOutput",
+    ) -> SamplerOutput:
+        prefix_lens = scheduler_output.speclink_cv_prefix_chunk_lens
+        if not prefix_lens or sampler_output.sampled_token_ids.shape[-1] <= 1:
+            return sampler_output
+
+        sampled_token_ids = sampler_output.sampled_token_ids
+        modified = False
+        speclink_cv_config = SpecLinkCVRuntimeConfig.from_env()
+        low_margin_candidate_req_ids = (
+            scheduler_output.speclink_cv_prefix_low_margin_candidate_req_ids
+        )
+        for req_id, prefix_len in prefix_lens.items():
+            req_idx = self.input_batch.req_id_to_index.get(req_id)
+            if req_idx is None or req_idx >= sampled_token_ids.shape[0]:
+                continue
+            if prefix_len >= sampled_token_ids.shape[1]:
+                continue
+            row = sampled_token_ids[req_idx]
+            valid = (row != -1) & (row < self.input_batch.vocab_size)
+            valid_count = int(valid.sum().item())
+            if speclink_cv_config.debug_dump:
+                speclink_cv_append_event(
+                    speclink_cv_config,
+                    {
+                        "event": "sampler_prefix_row",
+                        "request_id": req_id,
+                        "prefix_len": prefix_len,
+                        "valid_count": valid_count,
+                        "raw_sampled_token_ids": row.detach().cpu().tolist(),
+                    },
+                )
+            if valid_count == prefix_len + 1:
+                if not modified:
+                    sampled_token_ids = sampled_token_ids.clone()
+                    modified = True
+                scheduler_output.speclink_cv_prefix_accepted_req_ids.add(req_id)
+                low_margin_candidate = req_id in low_margin_candidate_req_ids
+                if (
+                    speclink_cv_config.confirm_prefix_accept_one_shot
+                    or low_margin_candidate
+                ):
+                    sampled_token_ids[req_idx, :] = -1
+                    if low_margin_candidate:
+                        scheduler_output.speclink_cv_prefix_low_margin_confirm_req_ids.add(
+                            req_id
+                        )
+                    if speclink_cv_config.debug_dump:
+                        speclink_cv_append_event(
+                            speclink_cv_config,
+                            {
+                                "event": (
+                                    "prefix_low_margin_confirm_masked_in_worker"
+                                    if low_margin_candidate
+                                    else "prefix_accept_confirm_masked_in_worker"
+                                ),
+                                "request_id": req_id,
+                                "prefix_len": prefix_len,
+                                "classification": "accepted",
+                                "min_margin": (
+                                    scheduler_output
+                                    .speclink_cv_prefix_low_margin_values.get(req_id)
+                                ),
+                                "threshold": (
+                                    speclink_cv_config
+                                    .prefix_low_margin_fallback_threshold
+                                ),
+                                "batch_wide_low_margin_fallback": (
+                                    speclink_cv_config
+                                    .batch_wide_low_margin_fallback
+                                ),
+                                "raw_valid_count": valid_count,
+                            },
+                        )
+                else:
+                    sampled_token_ids[req_idx, prefix_len] = -1
+
+        if modified:
+            sampler_output.sampled_token_ids = sampled_token_ids
+        return sampler_output
+
+    def _get_speclink_cv_prefix_min_margin(
+        self,
+        *,
+        request_id: str,
+        prefix_len: int,
+        logits: torch.Tensor,
+        spec_decode_metadata: SpecDecodeMetadata,
+    ) -> float | None:
+        if logits.shape[-1] < 2:
+            return None
+
+        target_logits = logits[spec_decode_metadata.target_logits_indices]
+        bonus_logits = logits[spec_decode_metadata.bonus_logits_indices]
+        req_ids = list(self.input_batch.req_ids)
+        offset = 0
+        for row_index, req_id in enumerate(req_ids):
+            if row_index >= len(spec_decode_metadata.num_draft_tokens):
+                break
+            num_draft = int(spec_decode_metadata.num_draft_tokens[row_index])
+            end = offset + num_draft
+            if req_id != request_id:
+                offset = end
+                continue
+
+            margins: list[float] = []
+            prefix_rows = min(max(prefix_len, 0), num_draft)
+            if prefix_rows > 0:
+                target_top2 = target_logits[offset : offset + prefix_rows].topk(
+                    k=2, dim=-1
+                ).values.float()
+                target_margins = target_top2[:, 0] - target_top2[:, 1]
+                margins.extend(target_margins.detach().cpu().tolist())
+            if row_index < bonus_logits.shape[0]:
+                bonus_top2 = bonus_logits[row_index].topk(k=2).values.float()
+                margins.append(
+                    float((bonus_top2[0] - bonus_top2[1]).detach().cpu().item())
+                )
+            if not margins:
+                return None
+            return min(margins)
+        return None
+
+    def _apply_speclink_cv_prefix_low_margin_confirm_mask(
+        self,
+        sampler_output: SamplerOutput,
+        scheduler_output: "SchedulerOutput",
+        logits: torch.Tensor | None,
+        spec_decode_metadata: SpecDecodeMetadata | None,
+    ) -> SamplerOutput:
+        prefix_lens = scheduler_output.speclink_cv_prefix_chunk_lens
+        if (
+            not prefix_lens
+            or logits is None
+            or spec_decode_metadata is None
+            or sampler_output.sampled_token_ids.shape[-1] <= 1
+        ):
+            return sampler_output
+
+        speclink_cv_config = SpecLinkCVRuntimeConfig.from_env()
+        threshold = speclink_cv_config.prefix_low_margin_fallback_threshold
+        # threshold == 0 is still useful in strict/batch-invariant runs: it
+        # catches exact verifier top-1/top-2 ties and replays the original
+        # full-K draft instead of letting h<K chunking pick a dense argmax
+        # without the draft-aware tie break.
+        if threshold < 0:
+            return sampler_output
+
+        min_margins: dict[str, float] = {}
+        triggered_req_ids: set[str] = set()
+        for req_id, prefix_len in prefix_lens.items():
+            min_margin = self._get_speclink_cv_prefix_min_margin(
+                request_id=req_id,
+                prefix_len=prefix_len,
+                logits=logits,
+                spec_decode_metadata=spec_decode_metadata,
+            )
+            if min_margin is None:
+                continue
+            min_margins[req_id] = min_margin
+            if min_margin <= threshold:
+                triggered_req_ids.add(req_id)
+        if not triggered_req_ids:
+            return sampler_output
+
+        if speclink_cv_config.batch_wide_low_margin_fallback:
+            candidate_req_ids = set(prefix_lens)
+        else:
+            candidate_req_ids = triggered_req_ids
+
+        for req_id in candidate_req_ids:
+            min_margin = min_margins.get(req_id)
+            scheduler_output.speclink_cv_prefix_low_margin_candidate_req_ids.add(
+                req_id
+            )
+            scheduler_output.speclink_cv_prefix_low_margin_values[req_id] = (
+                float("nan") if min_margin is None else min_margin
+            )
+            if speclink_cv_config.debug_dump:
+                speclink_cv_append_event(
+                    speclink_cv_config,
+                    {
+                        "event": "prefix_low_margin_confirm_candidate_in_worker",
+                        "request_id": req_id,
+                        "prefix_len": prefix_lens.get(req_id),
+                        "min_margin": min_margin,
+                        "threshold": threshold,
+                        "batch_wide_low_margin_fallback": (
+                            speclink_cv_config.batch_wide_low_margin_fallback
+                        ),
+                        "triggered_by_request_ids": sorted(triggered_req_ids),
+                        "direct_low_margin_trigger": req_id in triggered_req_ids,
+                    },
+                )
+        return sampler_output
+
+    def _apply_speclink_cv_prefix_reject_confirm_mask(
+        self,
+        sampler_output: SamplerOutput,
+        scheduler_output: "SchedulerOutput",
+    ) -> SamplerOutput:
+        prefix_lens = scheduler_output.speclink_cv_prefix_chunk_lens
+        if not prefix_lens or sampler_output.sampled_token_ids.shape[-1] <= 1:
+            return sampler_output
+        speclink_cv_config = SpecLinkCVRuntimeConfig.from_env()
+        low_margin_candidate_req_ids = (
+            scheduler_output.speclink_cv_prefix_low_margin_candidate_req_ids
+        )
+        if (
+            not speclink_cv_config.confirm_prefix_reject_one_shot
+            and not low_margin_candidate_req_ids
+            and not speclink_cv_config.batch_wide_prefix_reject_fallback
+        ):
+            return sampler_output
+
+        sampled_token_ids = sampler_output.sampled_token_ids
+        row_info: dict[str, tuple[int, int, bool]] = {}
+        rejected_req_ids: set[str] = set()
+        for req_id, prefix_len in prefix_lens.items():
+            req_idx = self.input_batch.req_id_to_index.get(req_id)
+            if req_idx is None or req_idx >= sampled_token_ids.shape[0]:
+                continue
+            row = sampled_token_ids[req_idx]
+            valid = (row != -1) & (row < self.input_batch.vocab_size)
+            valid_count = int(valid.sum().item())
+            prefix_accepted = valid_count == prefix_len + 1
+            row_info[req_id] = (req_idx, valid_count, prefix_accepted)
+            if not prefix_accepted:
+                rejected_req_ids.add(req_id)
+
+        batch_wide_confirm_req_ids: set[str] = set()
+        if (
+            speclink_cv_config.batch_wide_prefix_reject_fallback
+            and rejected_req_ids
+        ):
+            batch_wide_confirm_req_ids = set(row_info)
+            scheduler_output.speclink_cv_batch_wide_prefix_reject_confirm_req_ids.update(
+                batch_wide_confirm_req_ids
+            )
+            if speclink_cv_config.debug_dump:
+                speclink_cv_append_event(
+                    speclink_cv_config,
+                    {
+                        "event": "batch_wide_prefix_reject_confirm_triggered",
+                        "request_ids": sorted(batch_wide_confirm_req_ids),
+                        "rejected_request_ids": sorted(rejected_req_ids),
+                        "prefix_lens": {
+                            req_id: prefix_lens[req_id]
+                            for req_id in sorted(batch_wide_confirm_req_ids)
+                        },
+                    },
+                )
+
+        modified = False
+        for req_id, prefix_len in prefix_lens.items():
+            low_margin_candidate = req_id in low_margin_candidate_req_ids
+            batch_wide_confirm = req_id in batch_wide_confirm_req_ids
+            if (
+                not speclink_cv_config.confirm_prefix_reject_one_shot
+                and not low_margin_candidate
+                and not batch_wide_confirm
+            ):
+                continue
+            info = row_info.get(req_id)
+            if info is None:
+                continue
+            req_idx, valid_count, prefix_accepted = info
+            # Full prefix acceptance yields prefix tokens plus the speculative
+            # bonus. Anything shorter is a prefix reject and must not update the
+            # worker-side request/input_batch state before full-K confirmation.
+            if prefix_accepted:
+                if not (low_margin_candidate or batch_wide_confirm):
+                    continue
+                scheduler_output.speclink_cv_prefix_accepted_req_ids.add(req_id)
+                if batch_wide_confirm:
+                    scheduler_output.speclink_cv_batch_wide_prefix_reject_confirm_req_ids.add(
+                        req_id
+                    )
+                if low_margin_candidate:
+                    scheduler_output.speclink_cv_prefix_low_margin_confirm_req_ids.add(
+                        req_id
+                    )
+                num_accepted = prefix_len
+                classification = "accepted"
+            else:
+                num_accepted = max(0, min(valid_count - 1, prefix_len))
+                scheduler_output.speclink_cv_prefix_reject_confirm_req_ids.add(
+                    req_id
+                )
+                if batch_wide_confirm:
+                    scheduler_output.speclink_cv_batch_wide_prefix_reject_confirm_req_ids.add(
+                        req_id
+                    )
+                if low_margin_candidate:
+                    scheduler_output.speclink_cv_prefix_low_margin_confirm_req_ids.add(
+                        req_id
+                    )
+                scheduler_output.speclink_cv_prefix_reject_confirm_num_accepted[
+                    req_id
+                ] = num_accepted
+                classification = "rejected"
+            if low_margin_candidate and prefix_accepted:
+                scheduler_output.speclink_cv_prefix_low_margin_confirm_req_ids.add(
+                    req_id
+                )
+            if not modified:
+                sampled_token_ids = sampled_token_ids.clone()
+                modified = True
+            sampled_token_ids[req_idx, :] = -1
+            if speclink_cv_config.debug_dump:
+                if low_margin_candidate:
+                    event = "prefix_low_margin_confirm_masked_in_worker"
+                elif batch_wide_confirm:
+                    event = "batch_wide_prefix_reject_confirm_masked_in_worker"
+                else:
+                    event = "prefix_reject_confirm_masked_in_worker"
+                speclink_cv_append_event(
+                    speclink_cv_config,
+                    {
+                        "event": event,
+                        "request_id": req_id,
+                        "prefix_len": prefix_len,
+                        "classification": classification,
+                        "min_margin": (
+                            scheduler_output
+                            .speclink_cv_prefix_low_margin_values.get(req_id)
+                        ),
+                        "threshold": (
+                            speclink_cv_config
+                            .prefix_low_margin_fallback_threshold
+                        ),
+                        "batch_wide_low_margin_fallback": (
+                            speclink_cv_config.batch_wide_low_margin_fallback
+                        ),
+                        "batch_wide_prefix_reject_fallback": (
+                            speclink_cv_config
+                            .batch_wide_prefix_reject_fallback
+                        ),
+                        "batch_rejected_request_ids": sorted(rejected_req_ids),
+                        "raw_valid_count": valid_count,
+                        "num_accepted": num_accepted,
+                    },
+                )
+
+        if modified:
+            sampler_output.sampled_token_ids = sampled_token_ids
+        return sampler_output
+
+    def _mark_speclink_cv_prefix_reject_realign(
+        self,
+        sampler_output: SamplerOutput,
+        scheduler_output: "SchedulerOutput",
+    ) -> None:
+        prefix_lens = scheduler_output.speclink_cv_prefix_chunk_lens
+        if not prefix_lens or sampler_output.sampled_token_ids.shape[-1] <= 1:
+            return
+        speclink_cv_config = SpecLinkCVRuntimeConfig.from_env()
+        if (
+            speclink_cv_config.effective_prefix_reject_dense_realign_steps(
+                self.num_spec_tokens or 0
+            )
+            <= 0
+        ):
+            return
+        if speclink_cv_config.confirm_prefix_reject_one_shot:
+            return
+
+        sampled_token_ids = sampler_output.sampled_token_ids
+        for req_id, prefix_len in prefix_lens.items():
+            if (
+                req_id
+                in scheduler_output.speclink_cv_prefix_low_margin_confirm_req_ids
+            ):
+                continue
+            req_idx = self.input_batch.req_id_to_index.get(req_id)
+            if req_idx is None or req_idx >= sampled_token_ids.shape[0]:
+                continue
+            row = sampled_token_ids[req_idx]
+            valid = (row != -1) & (row < self.input_batch.vocab_size)
+            valid_count = int(valid.sum().item())
+            if valid_count == prefix_len + 1:
+                continue
+            scheduler_output.speclink_cv_prefix_reject_realign_req_ids.add(req_id)
+            scheduler_output.speclink_cv_skip_drafter_req_ids.add(req_id)
+            if speclink_cv_config.debug_dump:
+                speclink_cv_append_event(
+                    speclink_cv_config,
+                    {
+                        "event": "prefix_reject_dense_realign_marked_in_worker",
+                        "request_id": req_id,
+                        "prefix_len": prefix_len,
+                        "raw_valid_count": valid_count,
+                        "dense_realign_steps": (
+                            speclink_cv_config.effective_prefix_reject_dense_realign_steps(
+                                self.num_spec_tokens or 0
+                            )
+                        ),
+                },
+            )
+
+    def _speclink_cv_kv_cache_checksums(
+        self,
+        *,
+        row_index: int,
+        upto_position: int | None,
+        output_token_count: int | None,
+        config: SpecLinkCVRuntimeConfig,
+    ) -> list[dict[str, Any]]:
+        """Best-effort logical-position KV checksum dump for debug traces."""
+        tail_tokens = int(config.kv_debug_tail_tokens or 0)
+        if tail_tokens <= 0 or upto_position is None or not self.kv_caches:
+            return []
+        if row_index < 0 or row_index >= len(self.input_batch.req_ids):
+            return []
+        if (
+            config.kv_debug_row_index >= 0
+            and row_index != config.kv_debug_row_index
+        ):
+            return []
+        if output_token_count is not None:
+            if (
+                config.kv_debug_min_output_tokens >= 0
+                and output_token_count < config.kv_debug_min_output_tokens
+            ):
+                return []
+            if (
+                config.kv_debug_max_output_tokens >= 0
+                and output_token_count > config.kv_debug_max_output_tokens
+            ):
+                return []
+
+        try:
+            block_table = self.input_batch.block_table[0]
+            block_size = int(block_table.block_size)
+            block_ids = block_table.block_table.np[row_index]
+            max_layers = int(config.kv_debug_max_layers or len(self.kv_caches))
+            max_layers = max(0, min(max_layers, len(self.kv_caches)))
+            start = max(0, int(upto_position) - tail_tokens)
+            end = max(start, int(upto_position))
+            rows: list[dict[str, Any]] = []
+            token_row = self.input_batch.token_ids_cpu[row_index]
+            for logical_pos in range(start, end):
+                block_index = logical_pos // block_size
+                block_offset = logical_pos % block_size
+                if block_index >= len(block_ids):
+                    continue
+                block_id = int(block_ids[block_index])
+                if block_id < 0:
+                    continue
+                token_id = (
+                    int(token_row[logical_pos])
+                    if logical_pos < token_row.shape[0]
+                    else None
+                )
+                layer_rows: list[dict[str, Any]] = []
+                for layer_index, kv_cache in enumerate(self.kv_caches[:max_layers]):
+                    if not isinstance(kv_cache, torch.Tensor):
+                        continue
+                    if kv_cache.dim() < 5:
+                        continue
+                    try:
+                        if kv_cache.shape[0] == 2:
+                            key = kv_cache[0, block_id, block_offset]
+                            value = kv_cache[1, block_id, block_offset]
+                        elif kv_cache.shape[1] == 2:
+                            key = kv_cache[block_id, 0, block_offset]
+                            value = kv_cache[block_id, 1, block_offset]
+                        else:
+                            continue
+                        key_f = key.float()
+                        value_f = value.float()
+                        layer_rows.append(
+                            {
+                                "layer": layer_index,
+                                "k_sum": float(key_f.sum().item()),
+                                "k_abs_sum": float(key_f.abs().sum().item()),
+                                "k_max_abs": float(key_f.abs().max().item()),
+                                "v_sum": float(value_f.sum().item()),
+                                "v_abs_sum": float(value_f.abs().sum().item()),
+                                "v_max_abs": float(value_f.abs().max().item()),
+                            }
+                        )
+                    except Exception:  # noqa: BLE001
+                        continue
+                rows.append(
+                    {
+                        "logical_pos": logical_pos,
+                        "token_id": token_id,
+                        "block_id": block_id,
+                        "block_offset": block_offset,
+                        "physical_slot": block_id * block_size + block_offset,
+                        "layers": layer_rows,
+                    }
+                )
+            return rows
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _debug_dump_speclink_cv_verifier_step(
+        self,
+        *,
+        stage: str,
+        sampler_output: SamplerOutput,
+        scheduler_output: "SchedulerOutput",
+        logits: torch.Tensor | None,
+        spec_decode_metadata: SpecDecodeMetadata | None,
+    ) -> None:
+        speclink_cv_config = SpecLinkCVRuntimeConfig.from_env()
+        if (
+            not speclink_cv_config.debug_dump
+            or spec_decode_metadata is None
+            or logits is None
+        ):
+            return
+
+        try:
+            draft_tokens_flat = (
+                spec_decode_metadata.draft_token_ids.detach().cpu().tolist()
+            )
+            target_logits = logits[spec_decode_metadata.target_logits_indices]
+            bonus_logits = logits[spec_decode_metadata.bonus_logits_indices]
+            target_argmax_flat = (
+                Sampler.greedy_sample(target_logits.float()).detach().cpu().tolist()
+            )
+            bonus_argmax = (
+                Sampler.greedy_sample(bonus_logits.float()).detach().cpu().tolist()
+            )
+            topk = min(5, int(logits.shape[-1]))
+            target_topk_values, target_topk_ids = target_logits.topk(
+                k=topk, dim=-1
+            )
+            bonus_topk_values, bonus_topk_ids = bonus_logits.topk(
+                k=topk, dim=-1
+            )
+            target_topk_ids_flat = target_topk_ids.detach().cpu().tolist()
+            target_topk_values_flat = (
+                target_topk_values.float().detach().cpu().tolist()
+            )
+            bonus_topk_ids_list = bonus_topk_ids.detach().cpu().tolist()
+            bonus_topk_values_list = (
+                bonus_topk_values.float().detach().cpu().tolist()
+            )
+            target_logits_indices = (
+                spec_decode_metadata.target_logits_indices.detach().cpu().tolist()
+            )
+            bonus_logits_indices = (
+                spec_decode_metadata.bonus_logits_indices.detach().cpu().tolist()
+            )
+            target_position_ids = (
+                self.positions[spec_decode_metadata.target_logits_indices]
+                .detach()
+                .cpu()
+                .tolist()
+            )
+            target_input_token_ids = (
+                self.input_ids.gpu[spec_decode_metadata.target_logits_indices]
+                .detach()
+                .cpu()
+                .tolist()
+            )
+            bonus_position_ids = (
+                self.positions[spec_decode_metadata.bonus_logits_indices]
+                .detach()
+                .cpu()
+                .tolist()
+            )
+            bonus_input_token_ids = (
+                self.input_ids.gpu[spec_decode_metadata.bonus_logits_indices]
+                .detach()
+                .cpu()
+                .tolist()
+            )
+            try:
+                slot_mapping_gid0 = self.input_batch.block_table[
+                    0
+                ].slot_mapping.gpu
+                target_slot_mapping_gid0 = (
+                    slot_mapping_gid0[spec_decode_metadata.target_logits_indices]
+                    .detach()
+                    .cpu()
+                    .tolist()
+                )
+                bonus_slot_mapping_gid0 = (
+                    slot_mapping_gid0[spec_decode_metadata.bonus_logits_indices]
+                    .detach()
+                    .cpu()
+                    .tolist()
+                )
+            except Exception:  # noqa: BLE001
+                target_slot_mapping_gid0 = []
+                bonus_slot_mapping_gid0 = []
+            sampled_rows = sampler_output.sampled_token_ids.detach().cpu().tolist()
+            req_ids = list(self.input_batch.req_ids)
+            query_start_loc = (
+                self.query_start_loc.np[: len(req_ids) + 1]
+                .astype("int64", copy=False)
+                .tolist()
+            )
+            seq_lens = (
+                self.seq_lens[: len(req_ids)].detach().cpu().tolist()
+                if len(req_ids) > 0
+                else []
+            )
+            offset = 0
+            for row_index, req_id in enumerate(req_ids):
+                if row_index >= len(spec_decode_metadata.num_draft_tokens):
+                    break
+                num_draft = int(spec_decode_metadata.num_draft_tokens[row_index])
+                end = offset + num_draft
+                query_start = (
+                    query_start_loc[row_index] if row_index < len(query_start_loc) else 0
+                )
+                query_end = (
+                    query_start_loc[row_index + 1]
+                    if row_index + 1 < len(query_start_loc)
+                    else query_start
+                )
+                query_input_token_ids = (
+                    self.input_ids.gpu[query_start:query_end]
+                    .detach()
+                    .cpu()
+                    .tolist()
+                )
+                row_target_position_ids = target_position_ids[offset:end]
+                row_target_input_token_ids = target_input_token_ids[offset:end]
+                history_upto_position = (
+                    min(int(pos) for pos in row_target_position_ids)
+                    if row_target_position_ids
+                    else None
+                )
+                seq_len_for_row = (
+                    int(seq_lens[row_index]) if row_index < len(seq_lens) else None
+                )
+                num_tokens_no_spec = int(
+                    self.input_batch.num_tokens_no_spec[row_index]
+                )
+                context_tail_start = max(0, num_tokens_no_spec - 16)
+                context_tail = (
+                    self.input_batch.token_ids_cpu[
+                        row_index, context_tail_start:num_tokens_no_spec
+                    ]
+                    .astype("int64", copy=False)
+                    .tolist()
+                )
+                req_state = self.requests.get(req_id)
+                block_ids_tail: list[list[int]] = []
+                if req_state is not None:
+                    for block_group in req_state.block_ids:
+                        block_ids_tail.append([int(item) for item in block_group[-4:]])
+                speclink_cv_append_event(
+                    speclink_cv_config,
+                    {
+                        "event": "verifier_step_debug",
+                        "stage": stage,
+                        "request_id": req_id,
+                        "row_index": row_index,
+                        "num_computed_tokens_cpu": int(
+                            self.input_batch.num_computed_tokens_cpu[row_index]
+                        ),
+                        "num_tokens_no_spec": num_tokens_no_spec,
+                        "num_prompt_tokens": int(
+                            self.input_batch.num_prompt_tokens[row_index]
+                        ),
+                        "worker_output_token_count": (
+                            len(req_state.output_token_ids)
+                            if req_state is not None
+                            else None
+                        ),
+                        "context_tail_start": context_tail_start,
+                        "context_tail_token_ids": context_tail,
+                        "block_ids_tail": block_ids_tail,
+                        "num_scheduled_tokens": (
+                            scheduler_output.num_scheduled_tokens.get(req_id)
+                        ),
+                        "num_draft_tokens": num_draft,
+                        "scheduled_spec_token_ids": list(
+                            scheduler_output.scheduled_spec_decode_tokens.get(
+                                req_id, []
+                            )
+                        ),
+                        "prefix_chunk_len": (
+                            scheduler_output.speclink_cv_prefix_chunk_lens.get(
+                                req_id
+                            )
+                        ),
+                        "suffix_chunk_len": (
+                            scheduler_output.speclink_cv_suffix_chunk_lens.get(
+                                req_id
+                            )
+                        ),
+                        "metadata_draft_token_ids": draft_tokens_flat[offset:end],
+                        "target_argmax_token_ids": target_argmax_flat[offset:end],
+                        "target_topk_token_ids": target_topk_ids_flat[offset:end],
+                        "target_topk_values": target_topk_values_flat[offset:end],
+                        "target_logits_indices": target_logits_indices[offset:end],
+                        "query_input_token_ids": query_input_token_ids,
+                        "target_input_token_ids": row_target_input_token_ids,
+                        "target_position_ids": target_position_ids[offset:end],
+                        "target_slot_mapping_gid0": (
+                            target_slot_mapping_gid0[offset:end]
+                            if target_slot_mapping_gid0
+                            else []
+                        ),
+                        "bonus_argmax_token_id": (
+                            bonus_argmax[row_index]
+                            if row_index < len(bonus_argmax)
+                            else None
+                        ),
+                        "bonus_logits_index": (
+                            bonus_logits_indices[row_index]
+                            if row_index < len(bonus_logits_indices)
+                            else None
+                        ),
+                        "bonus_input_token_id": (
+                            bonus_input_token_ids[row_index]
+                            if row_index < len(bonus_input_token_ids)
+                            else None
+                        ),
+                        "bonus_position_id": (
+                            bonus_position_ids[row_index]
+                            if row_index < len(bonus_position_ids)
+                            else None
+                        ),
+                        "bonus_slot_mapping_gid0": (
+                            bonus_slot_mapping_gid0[row_index]
+                            if row_index < len(bonus_slot_mapping_gid0)
+                            else None
+                        ),
+                        "bonus_topk_token_ids": (
+                            bonus_topk_ids_list[row_index]
+                            if row_index < len(bonus_topk_ids_list)
+                            else []
+                        ),
+                        "bonus_topk_values": (
+                            bonus_topk_values_list[row_index]
+                            if row_index < len(bonus_topk_values_list)
+                            else []
+                        ),
+                        "sampled_token_ids": (
+                            sampled_rows[row_index]
+                            if row_index < len(sampled_rows)
+                            else []
+                        ),
+                        "query_start_loc": query_start_loc,
+                        "query_start": (
+                            query_start
+                        ),
+                        "query_end": (
+                            query_end
+                        ),
+                        "seq_len": (
+                            seq_len_for_row
+                        ),
+                        "history_kv_cache_upto_position": history_upto_position,
+                        "history_kv_cache_checksums": (
+                            self._speclink_cv_kv_cache_checksums(
+                                row_index=row_index,
+                                upto_position=history_upto_position,
+                                output_token_count=(
+                                    len(req_state.output_token_ids)
+                                    if req_state is not None
+                                    else None
+                                ),
+                                config=speclink_cv_config,
+                            )
+                        ),
+                        "tail_kv_cache_upto_position": seq_len_for_row,
+                        "kv_cache_checksums": (
+                            self._speclink_cv_kv_cache_checksums(
+                                row_index=row_index,
+                                upto_position=seq_len_for_row,
+                                output_token_count=(
+                                    len(req_state.output_token_ids)
+                                    if req_state is not None
+                                    else None
+                                ),
+                                config=speclink_cv_config,
+                            )
+                        ),
+                    },
+                )
+                offset = end
+        except Exception as exc:  # noqa: BLE001
+            speclink_cv_append_event(
+                speclink_cv_config,
+                {
+                    "event": "verifier_step_debug_error",
+                    "stage": stage,
+                    "error": repr(exc),
+                },
+            )
+
+    def _debug_dump_speclink_cv_dense_step(
+        self,
+        *,
+        stage: str,
+        sampler_output: SamplerOutput,
+        scheduler_output: "SchedulerOutput",
+        logits: torch.Tensor | None,
+        spec_decode_metadata: SpecDecodeMetadata | None,
+    ) -> None:
+        speclink_cv_config = SpecLinkCVRuntimeConfig.from_env()
+        if (
+            not speclink_cv_config.debug_dump
+            or logits is None
+            or spec_decode_metadata is not None
+        ):
+            return
+        if logits.shape[0] != self.input_batch.num_reqs:
+            return
+
+        try:
+            target_argmax = (
+                Sampler.greedy_sample(logits.float()).detach().cpu().tolist()
+            )
+            topk = min(5, int(logits.shape[-1]))
+            target_topk_values, target_topk_ids = logits.topk(k=topk, dim=-1)
+            target_topk_ids_list = target_topk_ids.detach().cpu().tolist()
+            target_topk_values_list = (
+                target_topk_values.float().detach().cpu().tolist()
+            )
+            sampled_rows = sampler_output.sampled_token_ids.detach().cpu().tolist()
+            req_ids = list(self.input_batch.req_ids)
+            query_start_loc = (
+                self.query_start_loc.np[: len(req_ids) + 1]
+                .astype("int64", copy=False)
+                .tolist()
+            )
+            seq_lens = (
+                self.seq_lens[: len(req_ids)].detach().cpu().tolist()
+                if len(req_ids) > 0
+                else []
+            )
+            try:
+                slot_mapping_gid0 = self.input_batch.block_table[
+                    0
+                ].slot_mapping.gpu
+            except Exception:  # noqa: BLE001
+                slot_mapping_gid0 = None
+            for row_index, req_id in enumerate(req_ids):
+                if req_id in scheduler_output.scheduled_spec_decode_tokens:
+                    continue
+                if scheduler_output.num_scheduled_tokens.get(req_id, 0) <= 0:
+                    continue
+                num_tokens_no_spec = int(
+                    self.input_batch.num_tokens_no_spec[row_index]
+                )
+                context_tail_start = max(0, num_tokens_no_spec - 16)
+                context_tail = (
+                    self.input_batch.token_ids_cpu[
+                        row_index, context_tail_start:num_tokens_no_spec
+                    ]
+                    .astype("int64", copy=False)
+                    .tolist()
+                )
+                req_state = self.requests.get(req_id)
+                block_ids_tail: list[list[int]] = []
+                if req_state is not None:
+                    for block_group in req_state.block_ids:
+                        block_ids_tail.append([int(item) for item in block_group[-4:]])
+                query_end = (
+                    query_start_loc[row_index + 1]
+                    if row_index + 1 < len(query_start_loc)
+                    else None
+                )
+                seq_len_for_row = (
+                    int(seq_lens[row_index]) if row_index < len(seq_lens) else None
+                )
+                dense_position_id = None
+                dense_slot_mapping_gid0 = None
+                if query_end is not None and query_end > 0:
+                    dense_index = int(query_end) - 1
+                    dense_position_id = int(self.positions[dense_index].item())
+                    if slot_mapping_gid0 is not None:
+                        dense_slot_mapping_gid0 = int(
+                            slot_mapping_gid0[dense_index].item()
+                        )
+                speclink_cv_append_event(
+                    speclink_cv_config,
+                    {
+                        "event": "dense_step_debug",
+                        "stage": stage,
+                        "request_id": req_id,
+                        "row_index": row_index,
+                        "num_computed_tokens_cpu": int(
+                            self.input_batch.num_computed_tokens_cpu[row_index]
+                        ),
+                        "num_tokens_no_spec": num_tokens_no_spec,
+                        "num_prompt_tokens": int(
+                            self.input_batch.num_prompt_tokens[row_index]
+                        ),
+                        "worker_output_token_count": (
+                            len(req_state.output_token_ids)
+                            if req_state is not None
+                            else None
+                        ),
+                        "context_tail_start": context_tail_start,
+                        "context_tail_token_ids": context_tail,
+                        "block_ids_tail": block_ids_tail,
+                        "num_scheduled_tokens": (
+                            scheduler_output.num_scheduled_tokens.get(req_id)
+                        ),
+                        "scheduled_spec_token_ids": [],
+                        "target_argmax_token_ids": [target_argmax[row_index]],
+                        "target_topk_token_ids": [target_topk_ids_list[row_index]],
+                        "target_topk_values": [target_topk_values_list[row_index]],
+                        "target_position_ids": [dense_position_id],
+                        "target_slot_mapping_gid0": [dense_slot_mapping_gid0],
+                        "sampled_token_ids": (
+                            sampled_rows[row_index]
+                            if row_index < len(sampled_rows)
+                            else []
+                        ),
+                        "query_start_loc": query_start_loc,
+                        "query_start": (
+                            query_start_loc[row_index]
+                            if row_index < len(query_start_loc)
+                            else None
+                        ),
+                        "query_end": query_end,
+                        "seq_len": (
+                            seq_len_for_row
+                        ),
+                        "history_kv_cache_upto_position": dense_position_id,
+                        "history_kv_cache_checksums": (
+                            self._speclink_cv_kv_cache_checksums(
+                                row_index=row_index,
+                                upto_position=dense_position_id,
+                                output_token_count=(
+                                    len(req_state.output_token_ids)
+                                    if req_state is not None
+                                    else None
+                                ),
+                                config=speclink_cv_config,
+                            )
+                        ),
+                        "tail_kv_cache_upto_position": seq_len_for_row,
+                        "kv_cache_checksums": (
+                            self._speclink_cv_kv_cache_checksums(
+                                row_index=row_index,
+                                upto_position=seq_len_for_row,
+                                output_token_count=(
+                                    len(req_state.output_token_ids)
+                                    if req_state is not None
+                                    else None
+                                ),
+                                config=speclink_cv_config,
+                            )
+                        ),
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001
+            speclink_cv_append_event(
+                speclink_cv_config,
+                {
+                    "event": "dense_step_debug_error",
+                    "stage": stage,
+                    "error": repr(exc),
+                },
+            )
+
+    def _debug_dump_speclink_cv_proposer_step(
+        self,
+        *,
+        stage: str,
+        scheduler_output: "SchedulerOutput",
+        sampled_token_ids: torch.Tensor | list[list[int]],
+        target_token_ids: torch.Tensor,
+        target_positions: torch.Tensor,
+        target_hidden_states: torch.Tensor,
+        next_token_ids: torch.Tensor,
+        token_indices_to_sample: torch.Tensor | None,
+        common_attn_metadata: CommonAttentionMetadata,
+        draft_token_ids: torch.Tensor | list[list[int]],
+    ) -> None:
+        speclink_cv_config = SpecLinkCVRuntimeConfig.from_env()
+        if not speclink_cv_config.debug_dump:
+            return
+
+        def tensor_to_list(value: torch.Tensor) -> list[Any]:
+            return value.detach().cpu().tolist()
+
+        def tensor_scalar(value: torch.Tensor, index: int) -> int | None:
+            if index < 0 or index >= value.shape[0]:
+                return None
+            return int(value[index].detach().cpu().item())
+
+        def hidden_checksum(index: int) -> dict[str, float] | None:
+            if index < 0 or index >= target_hidden_states.shape[0]:
+                return None
+            item = target_hidden_states[index].detach().float()
+            return {
+                "sum": float(item.sum().item()),
+                "abs_sum": float(item.abs().sum().item()),
+                "max_abs": float(item.abs().max().item()),
+            }
+
+        try:
+            req_ids = list(self.input_batch.req_ids)
+            num_reqs = len(req_ids)
+            if num_reqs == 0:
+                return
+            row_indices = list(range(num_reqs))
+            if speclink_cv_config.kv_debug_row_index >= 0:
+                row = speclink_cv_config.kv_debug_row_index
+                row_indices = [row] if row < num_reqs else []
+            if not row_indices:
+                return
+
+            query_start_loc = tensor_to_list(
+                common_attn_metadata.query_start_loc[: num_reqs + 1]
+            )
+            seq_lens = (
+                tensor_to_list(common_attn_metadata.seq_lens[:num_reqs])
+                if common_attn_metadata.seq_lens is not None
+                else []
+            )
+            if token_indices_to_sample is None:
+                token_indices_rows = [
+                    [int(query_start_loc[row + 1]) - 1]
+                    for row in range(num_reqs)
+                ]
+            else:
+                flat_indices = [
+                    int(item)
+                    for item in tensor_to_list(token_indices_to_sample.reshape(-1))
+                ]
+                slots_per_request = (
+                    max(1, len(flat_indices) // num_reqs)
+                    if len(flat_indices) >= num_reqs
+                    else 1
+                )
+                token_indices_rows = []
+                for row in range(num_reqs):
+                    start = row * slots_per_request
+                    end = min(len(flat_indices), start + slots_per_request)
+                    token_indices_rows.append(flat_indices[start:end])
+
+            if isinstance(sampled_token_ids, torch.Tensor):
+                sampled_rows = tensor_to_list(sampled_token_ids[:num_reqs])
+            else:
+                sampled_rows = sampled_token_ids[:num_reqs]
+            next_tokens = tensor_to_list(next_token_ids[:num_reqs])
+            if isinstance(draft_token_ids, torch.Tensor):
+                draft_rows = tensor_to_list(draft_token_ids[:num_reqs])
+            else:
+                draft_rows = draft_token_ids[:num_reqs]
+
+            slot_mapping = getattr(common_attn_metadata, "slot_mapping", None)
+            slot_values: list[int] = []
+            if isinstance(slot_mapping, torch.Tensor):
+                slot_values = [
+                    int(item)
+                    for item in tensor_to_list(slot_mapping.reshape(-1))
+                ]
+
+            active_ordinals = [
+                _speclink_cv_request_order_key(req_id)[0] for req_id in req_ids
+            ]
+            for row_index in row_indices:
+                req_id = req_ids[row_index]
+                req_state = self.requests.get(req_id)
+                output_count = (
+                    len(req_state.output_token_ids)
+                    if req_state is not None
+                    else None
+                )
+                if output_count is not None:
+                    if (
+                        speclink_cv_config.kv_debug_min_output_tokens >= 0
+                        and output_count
+                        < speclink_cv_config.kv_debug_min_output_tokens
+                    ):
+                        continue
+                    if (
+                        speclink_cv_config.kv_debug_max_output_tokens >= 0
+                        and output_count
+                        > speclink_cv_config.kv_debug_max_output_tokens
+                    ):
+                        continue
+
+                indices = token_indices_rows[row_index]
+                sample_index = indices[0] if indices else -1
+                if target_positions.dim() == 1:
+                    position_value: int | list[int] | None = tensor_scalar(
+                        target_positions, sample_index
+                    )
+                else:
+                    position_value = (
+                        [
+                            int(item)
+                            for item in tensor_to_list(
+                                target_positions[:, sample_index]
+                            )
+                        ]
+                        if 0 <= sample_index < target_positions.shape[-1]
+                        else None
+                    )
+                speclink_cv_append_event(
+                    speclink_cv_config,
+                    {
+                        "event": "proposer_step_debug",
+                        "stage": stage,
+                        "request_id": req_id,
+                        "row_index": row_index,
+                        "active_request_ordinals": active_ordinals,
+                        "worker_output_token_count": output_count,
+                        "num_computed_tokens_cpu": int(
+                            self.input_batch.num_computed_tokens_cpu[
+                                row_index
+                            ]
+                        ),
+                        "num_tokens_no_spec": int(
+                            self.input_batch.num_tokens_no_spec[row_index]
+                        ),
+                        "num_prompt_tokens": int(
+                            self.input_batch.num_prompt_tokens[row_index]
+                        ),
+                        "query_start_loc": query_start_loc,
+                        "query_start": query_start_loc[row_index],
+                        "query_end": query_start_loc[row_index + 1],
+                        "seq_len": (
+                            int(seq_lens[row_index])
+                            if row_index < len(seq_lens)
+                            else None
+                        ),
+                        "sample_indices": indices,
+                        "sample_index": sample_index,
+                        "sample_position": position_value,
+                        "sample_slot_mapping": (
+                            slot_values[sample_index]
+                            if 0 <= sample_index < len(slot_values)
+                            else None
+                        ),
+                        "sample_target_token_id": tensor_scalar(
+                            target_token_ids, sample_index
+                        ),
+                        "next_token_id": (
+                            int(next_tokens[row_index])
+                            if row_index < len(next_tokens)
+                            else None
+                        ),
+                        "sampled_token_ids": (
+                            sampled_rows[row_index]
+                            if row_index < len(sampled_rows)
+                            else []
+                        ),
+                        "draft_token_ids": (
+                            draft_rows[row_index]
+                            if row_index < len(draft_rows)
+                            else []
+                        ),
+                        "scheduled_spec_token_ids": list(
+                            scheduler_output.scheduled_spec_decode_tokens.get(
+                                req_id, []
+                            )
+                        ),
+                        "prefix_chunk_len": (
+                            scheduler_output.speclink_cv_prefix_chunk_lens.get(
+                                req_id
+                            )
+                        ),
+                        "suffix_chunk_len": (
+                            scheduler_output.speclink_cv_suffix_chunk_lens.get(
+                                req_id
+                            )
+                        ),
+                        "target_hidden_checksum": hidden_checksum(sample_index),
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001
+            speclink_cv_append_event(
+                speclink_cv_config,
+                {
+                    "event": "proposer_step_debug_error",
+                    "stage": stage,
+                    "error": repr(exc),
+                },
+            )
+
+    def _speclink_cv_adjust_prefix_reject_drafter_rollback(
+        self,
+        *,
+        scheduler_output: "SchedulerOutput",
+        num_rejected_tokens_gpu: torch.Tensor | None,
+    ) -> torch.Tensor | None:
+        if num_rejected_tokens_gpu is None:
+            return None
+        speclink_cv_config = SpecLinkCVRuntimeConfig.from_env()
+        suffix_lens = scheduler_output.speclink_cv_prefix_skipped_suffix_lens
+        if not speclink_cv_config.enable or not suffix_lens:
+            return num_rejected_tokens_gpu
+
+        # num_rejected_tokens_gpu is relative to the current target verifier
+        # forward. A prefix chunk forward contains only h draft tokens plus the
+        # target bonus/recovered slot; the skipped suffix never enters this
+        # forward's query range. Adding K-h here would make EagleProposer shorten
+        # common_attn_metadata.seq_lens by tokens that are not present in the
+        # current forward, moving the drafter context before the accepted prefix.
+        #
+        # The skipped suffix is still discarded on the scheduler/request side:
+        # the prefix result clears/requeues request.spec_token_ids and rolls back
+        # target KV blocks to request.num_computed_tokens. Stale drafter KV past
+        # the resulting seq_len is not visible to subsequent attention.
+        if speclink_cv_config.debug_dump:
+            speclink_cv_append_event(
+                speclink_cv_config,
+                {
+                    "event": "prefix_skipped_suffix_not_added_to_drafter_rollback",
+                    "skipped_suffix_lens": {
+                        req_id: int(suffix_lens.get(req_id, 0) or 0)
+                        for req_id in self.input_batch.req_ids[
+                            : self.input_batch.num_reqs
+                        ]
+                        if int(suffix_lens.get(req_id, 0) or 0) > 0
+                    },
+                    "reason": "suffix_not_in_current_target_forward",
+                },
+            )
+        return num_rejected_tokens_gpu
+
     def _bookkeeping_sync(
         self,
         scheduler_output: "SchedulerOutput",
@@ -3687,6 +4999,57 @@ class GPUModelRunner(
             else force_uniform_decode
         )
 
+    def _speclink_cv_prefix_uniform_decode_query_len(
+        self,
+        scheduler_output: "SchedulerOutput",
+        num_reqs: int,
+        max_num_scheduled_tokens: int,
+        num_tokens_unpadded: int,
+    ) -> int | None:
+        """Return h+1 when a SpecLink-CV prefix verifier batch is uniform."""
+        speclink_cv_config = SpecLinkCVRuntimeConfig.from_env()
+        if (
+            not speclink_cv_config.enable
+            or not speclink_cv_config.prefix_full_cudagraph
+        ):
+            return None
+
+        prefix_lens = scheduler_output.speclink_cv_prefix_chunk_lens
+        if not prefix_lens:
+            return None
+
+        active_req_ids: list[str] = []
+        for req_id in self.input_batch.req_ids:
+            scheduled = int(scheduler_output.num_scheduled_tokens.get(req_id, 0))
+            if scheduled > 0:
+                active_req_ids.append(req_id)
+
+        if len(active_req_ids) != num_reqs:
+            return None
+
+        prefix_query_lens: set[int] = set()
+        for req_id in active_req_ids:
+            prefix_len = prefix_lens.get(req_id)
+            if prefix_len is None:
+                return None
+            query_len = int(prefix_len) + 1
+            scheduled = int(scheduler_output.num_scheduled_tokens.get(req_id, 0))
+            if scheduled != query_len:
+                return None
+            prefix_query_lens.add(query_len)
+
+        if len(prefix_query_lens) != 1:
+            return None
+
+        query_len = prefix_query_lens.pop()
+        if query_len <= 1 or query_len >= self.uniform_decode_query_len:
+            return None
+        if max_num_scheduled_tokens != query_len:
+            return None
+        if num_tokens_unpadded != query_len * num_reqs:
+            return None
+        return query_len
+
     def _determine_batch_execution_and_padding(
         self,
         num_tokens: int,
@@ -3699,6 +5062,7 @@ class GPUModelRunner(
         # For cudagraph capture TODO(lucas): Refactor how we capture cudagraphs (will
         # be improved in model runner v2)
         force_uniform_decode: bool | None = None,
+        uniform_decode_query_len: int | None = None,
         force_has_lora: bool | None = None,
         force_num_active_loras: int | None = None,
         num_encoder_reqs: int = 0,
@@ -3709,9 +5073,12 @@ class GPUModelRunner(
         torch.Tensor | None,
         CUDAGraphStat | None,
     ]:
+        active_uniform_decode_query_len = (
+            uniform_decode_query_len or self.uniform_decode_query_len
+        )
         uniform_decode = self._is_uniform_decode(
             max_num_scheduled_tokens=max_num_scheduled_tokens,
-            uniform_decode_query_len=self.uniform_decode_query_len,
+            uniform_decode_query_len=active_uniform_decode_query_len,
             num_tokens=num_tokens,
             num_reqs=num_reqs,
             force_uniform_decode=force_uniform_decode,
@@ -3738,6 +5105,7 @@ class GPUModelRunner(
                 has_lora=has_lora,
                 uniform_decode=uniform_decode,
                 num_active_loras=num_active_loras,
+                uniform_decode_query_len=active_uniform_decode_query_len,
                 valid_modes={CUDAGraphMode.NONE} if force_eager else valid_modes,
                 invalid_modes={CUDAGraphMode.FULL} if disable_full else None,
             )
@@ -3911,6 +5279,86 @@ class GPUModelRunner(
 
         return slot_mappings_by_gid, slot_mappings_by_layer
 
+    def _maybe_mask_speclink_cv_prefix_kv_writes(
+        self,
+        scheduler_output: "SchedulerOutput",
+        slot_mappings_by_gid: dict[int, torch.Tensor] | None,
+        ubatch_slices: "UBatchSlices | None" = None,
+    ) -> tuple[
+        dict[int, torch.Tensor] | None,
+        dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None,
+    ] | None:
+        speclink_cv_config = SpecLinkCVRuntimeConfig.from_env()
+        prefix_lens = scheduler_output.speclink_cv_prefix_chunk_lens
+        if (
+            not speclink_cv_config.enable
+            or not speclink_cv_config.prefix_no_kv_write
+            or not prefix_lens
+            or slot_mappings_by_gid is None
+        ):
+            return None
+
+        ranges: list[dict[str, int | str]] = []
+        offset = 0
+        for req_id in self.input_batch.req_ids:
+            count = int(scheduler_output.num_scheduled_tokens.get(req_id, 0))
+            if count <= 0:
+                continue
+            start = offset
+            end = offset + count
+            if req_id in prefix_lens:
+                ranges.append(
+                    {
+                        "request_id": req_id,
+                        "start": start,
+                        "end": end,
+                        "scheduled_tokens": count,
+                        "prefix_len": int(prefix_lens[req_id]),
+                    }
+                )
+            offset = end
+        if not ranges:
+            return None
+
+        masked_by_gid: dict[int, torch.Tensor] = {}
+        for gid, slot_mapping in slot_mappings_by_gid.items():
+            masked = slot_mapping.clone()
+            for item in ranges:
+                start = int(item["start"])
+                end = min(int(item["end"]), masked.shape[0])
+                if start < end:
+                    masked[start:end].fill_(-1)
+            masked_by_gid[gid] = masked
+
+        slot_mappings_by_layer: dict[str, torch.Tensor] = {}
+        for gid, kv_cache_group in enumerate(self.kv_cache_config.kv_cache_groups):
+            slot_mapping = masked_by_gid[gid]
+            for layer_name in kv_cache_group.layer_names:
+                slot_mappings_by_layer[layer_name] = slot_mapping
+
+        if ubatch_slices is not None:
+            sliced_result: list[dict[str, torch.Tensor]] = []
+            for ubatch in ubatch_slices:
+                sliced_mappings: dict[str, torch.Tensor] = {}
+                for layer_name, slot_mapping in slot_mappings_by_layer.items():
+                    sliced_mappings[layer_name] = slot_mapping[ubatch.token_slice]
+                sliced_result.append(sliced_mappings)
+            slot_mappings: (
+                dict[str, torch.Tensor] | list[dict[str, torch.Tensor]]
+            ) = sliced_result
+        else:
+            slot_mappings = slot_mappings_by_layer
+
+        speclink_cv_append_event(
+            speclink_cv_config,
+            {
+                "event": "prefix_no_kv_write_slot_masked",
+                "ranges": ranges,
+                "num_tokens_unpadded": offset,
+            },
+        )
+        return masked_by_gid, slot_mappings
+
     def _is_all_reqs_chunked_prefill(self) -> bool:
         """Check if all scheduled requests are marked to discard sampled tokens.
 
@@ -4024,6 +5472,14 @@ class GPUModelRunner(
                     scheduler_output.num_common_prefix_blocks,
                 )
 
+            speclink_cv_uniform_decode_query_len = (
+                self._speclink_cv_prefix_uniform_decode_query_len(
+                    scheduler_output,
+                    num_reqs=num_reqs,
+                    max_num_scheduled_tokens=max_num_scheduled_tokens,
+                    num_tokens_unpadded=num_tokens_unpadded,
+                )
+            )
             (
                 cudagraph_mode,
                 batch_desc,
@@ -4036,6 +5492,7 @@ class GPUModelRunner(
                 num_scheduled_tokens_np=num_scheduled_tokens_np,
                 max_num_scheduled_tokens=max_num_scheduled_tokens,
                 use_cascade_attn=cascade_attn_prefix_lens is not None,
+                uniform_decode_query_len=speclink_cv_uniform_decode_query_len,
                 num_encoder_reqs=len(scheduler_output.scheduled_encoder_inputs),
             )
 
@@ -4047,6 +5504,52 @@ class GPUModelRunner(
                 should_ubatch,
                 num_tokens_across_dp,
             )
+            speclink_cv_config = SpecLinkCVRuntimeConfig.from_env()
+            if speclink_cv_config.enable and speclink_cv_config.profile_jsonl:
+                speclink_cv_phase = "dense"
+                if scheduler_output.speclink_cv_prefix_chunk_lens:
+                    speclink_cv_phase = "prefix"
+                elif scheduler_output.speclink_cv_suffix_chunk_lens:
+                    speclink_cv_phase = "suffix"
+                elif scheduler_output.speclink_cv_skip_drafter_req_ids:
+                    speclink_cv_phase = "dense_realign"
+                elif scheduler_output.scheduled_spec_decode_tokens:
+                    speclink_cv_phase = "one_shot"
+                speclink_cv_append_profile(
+                    speclink_cv_config,
+                    {
+                        "event": "model_forward_plan",
+                        "phase": speclink_cv_phase,
+                        "cudagraph_mode": str(cudagraph_mode),
+                        "batch_descriptor": repr(batch_desc),
+                        "should_ubatch": bool(should_ubatch),
+                        "num_reqs": int(num_reqs),
+                        "num_tokens_unpadded": int(num_tokens_unpadded),
+                        "num_tokens_padded": int(batch_desc.num_tokens),
+                        "max_num_scheduled_tokens": int(
+                            max_num_scheduled_tokens
+                        ),
+                        "uniform_decode_query_len": (
+                            None
+                            if speclink_cv_uniform_decode_query_len is None
+                            else int(speclink_cv_uniform_decode_query_len)
+                        ),
+                        "batch_descriptor_query_len": (
+                            None
+                            if batch_desc.uniform_decode_query_len is None
+                            else int(batch_desc.uniform_decode_query_len)
+                        ),
+                        "scheduled_spec_reqs": len(
+                            scheduler_output.scheduled_spec_decode_tokens
+                        ),
+                        "prefix_chunk_lens": dict(
+                            scheduler_output.speclink_cv_prefix_chunk_lens
+                        ),
+                        "suffix_chunk_lens": dict(
+                            scheduler_output.speclink_cv_suffix_chunk_lens
+                        ),
+                    },
+                )
 
             num_tokens_padded = batch_desc.num_tokens
             num_reqs_padded = (
@@ -4119,6 +5622,17 @@ class GPUModelRunner(
                 num_tokens_unpadded=num_tokens_unpadded,
                 ubatch_slices=ubatch_slices_padded,
             )
+            speclink_cv_masked_slot_mappings = (
+                self._maybe_mask_speclink_cv_prefix_kv_writes(
+                    scheduler_output,
+                    slot_mappings_by_group,
+                    ubatch_slices=ubatch_slices_padded,
+                )
+            )
+            if speclink_cv_masked_slot_mappings is not None:
+                slot_mappings_by_group, slot_mappings = (
+                    speclink_cv_masked_slot_mappings
+                )
 
             attn_metadata, spec_decode_common_attn_metadata = (
                 self._build_attention_metadata(
@@ -4368,6 +5882,46 @@ class GPUModelRunner(
         try:
             with record_function_or_nullcontext("gpu_model_runner: sample"):
                 sampler_output = self._sample(logits, spec_decode_metadata)
+                self._debug_dump_speclink_cv_dense_step(
+                    stage="after_sample",
+                    sampler_output=sampler_output,
+                    scheduler_output=scheduler_output,
+                    logits=logits,
+                    spec_decode_metadata=spec_decode_metadata,
+                )
+                self._debug_dump_speclink_cv_verifier_step(
+                    stage="before_prefix_bonus_mask",
+                    sampler_output=sampler_output,
+                    scheduler_output=scheduler_output,
+                    logits=logits,
+                    spec_decode_metadata=spec_decode_metadata,
+                )
+                sampler_output = (
+                    self._apply_speclink_cv_prefix_low_margin_confirm_mask(
+                        sampler_output,
+                        scheduler_output,
+                        logits,
+                        spec_decode_metadata,
+                    )
+                )
+                sampler_output = (
+                    self._apply_speclink_cv_prefix_reject_confirm_mask(
+                        sampler_output, scheduler_output
+                    )
+                )
+                self._mark_speclink_cv_prefix_reject_realign(
+                    sampler_output, scheduler_output
+                )
+                sampler_output = self._apply_speclink_cv_prefix_bonus_mask(
+                    sampler_output, scheduler_output
+                )
+                self._debug_dump_speclink_cv_verifier_step(
+                    stage="after_prefix_bonus_mask",
+                    sampler_output=sampler_output,
+                    scheduler_output=scheduler_output,
+                    logits=logits,
+                    spec_decode_metadata=spec_decode_metadata,
+                )
         finally:
             speclink_trace_end_verify_context(speclink_trace_verify_token)
         _speclink_breakdown_sync()
@@ -4388,28 +5942,79 @@ class GPUModelRunner(
                 )
 
         self._draft_token_ids = None
+        self._draft_token_ids_width = None
         self._draft_token_req_ids = None
+        self._speclink_cv_empty_draft_req_ids = None
         self.valid_sampled_token_count_gpu = None
         self.input_batch.prev_sampled_token_ids = None
+        speclink_cv_config = SpecLinkCVRuntimeConfig.from_env()
 
         def propose_draft_token_ids(sampled_token_ids):
             nonlocal speclink_draft_forward_ms, speclink_num_draft_tokens
             assert spec_decode_common_attn_metadata is not None
+            speclink_cv_active_draft_tokens: int | None = None
+            if (
+                speclink_cv_config.enable
+                and speclink_cv_config.staged_drafting
+                and self.num_spec_tokens > 1
+                and not getattr(self.drafter, "parallel_drafting", False)
+            ):
+                prefix_len = speclink_cv_config.force_prefix_len
+                if prefix_len <= 0:
+                    prefix_len = speclink_cv_half_chunk(
+                        self.num_spec_tokens,
+                        speclink_cv_config.default_half_policy,
+                    )
+                speclink_cv_active_draft_tokens = max(
+                    1, min(int(prefix_len), self.num_spec_tokens)
+                )
+            selective_skip_rows: list[int] = []
+            original_discard_mask: np.ndarray | None = None
+            if speclink_cv_selective_skip_drafter_req_ids:
+                selective_skip_rows = [
+                    row
+                    for row, req_id in enumerate(self.input_batch.req_ids)
+                    if req_id in speclink_cv_selective_skip_drafter_req_ids
+                ]
+                if selective_skip_rows:
+                    num_reqs = self.input_batch.num_reqs
+                    original_discard_mask = self.discard_request_mask.np[
+                        :num_reqs
+                    ].copy()
+                    self.discard_request_mask.np[selective_skip_rows] = True
+                    self.discard_request_mask.copy_to_gpu(num_reqs)
             _speclink_breakdown_sync()
             speclink_draft_start = _speclink_breakdown_now()
-            with record_function_or_nullcontext("gpu_model_runner: draft"):
-                self._draft_token_ids = self.propose_draft_token_ids(
-                    scheduler_output,
-                    sampled_token_ids,
-                    self.input_batch.sampling_metadata,
-                    hidden_states,
-                    sample_hidden_states,
-                    aux_hidden_states,
-                    spec_decode_metadata,
-                    spec_decode_common_attn_metadata,
-                    slot_mappings,
-                )
-                self._copy_draft_token_ids_to_cpu(scheduler_output)
+            try:
+                with record_function_or_nullcontext("gpu_model_runner: draft"):
+                    self._draft_token_ids = self.propose_draft_token_ids(
+                        scheduler_output,
+                        sampled_token_ids,
+                        self.input_batch.sampling_metadata,
+                        hidden_states,
+                        sample_hidden_states,
+                        aux_hidden_states,
+                        spec_decode_metadata,
+                        spec_decode_common_attn_metadata,
+                        slot_mappings,
+                        max_draft_tokens=speclink_cv_active_draft_tokens,
+                    )
+                    if selective_skip_rows:
+                        if torch.is_tensor(self._draft_token_ids):
+                            self._draft_token_ids[selective_skip_rows] = 0
+                        else:
+                            draft_lists = list(self._draft_token_ids)
+                            for row in selective_skip_rows:
+                                draft_lists[row] = []
+                            self._draft_token_ids = draft_lists
+                    self._copy_draft_token_ids_to_cpu(scheduler_output)
+            finally:
+                if original_discard_mask is not None:
+                    num_reqs = self.input_batch.num_reqs
+                    self.discard_request_mask.np[:num_reqs] = (
+                        original_discard_mask
+                    )
+                    self.discard_request_mask.copy_to_gpu(num_reqs)
             _speclink_breakdown_sync()
             if speclink_breakdown_event is not None:
                 speclink_draft_forward_ms += _speclink_elapsed_ms(
@@ -4425,14 +6030,121 @@ class GPUModelRunner(
                 except Exception:  # noqa: BLE001
                     speclink_num_draft_tokens = None
 
+        speclink_cv_skip_drafter_req_ids = set(
+            scheduler_output.speclink_cv_skip_drafter_req_ids
+        )
+        speclink_cv_prefix_accepted_req_ids = set(
+            scheduler_output.speclink_cv_prefix_accepted_req_ids
+        )
+        speclink_cv_prefix_low_margin_req_ids = set(
+            scheduler_output.speclink_cv_prefix_low_margin_confirm_req_ids
+        )
+        speclink_cv_batch_wide_prefix_reject_req_ids = set(
+            scheduler_output
+            .speclink_cv_batch_wide_prefix_reject_confirm_req_ids
+        )
+        speclink_cv_prefix_reject_realign_req_ids = set(
+            scheduler_output.speclink_cv_prefix_reject_realign_req_ids
+        )
+        if not speclink_cv_config.staged_drafting:
+            speclink_cv_skip_drafter_req_ids.update(
+                speclink_cv_prefix_accepted_req_ids
+            )
+        speclink_cv_skip_drafter_req_ids.update(
+            speclink_cv_prefix_low_margin_req_ids
+        )
+        speclink_cv_skip_drafter_req_ids.update(
+            speclink_cv_batch_wide_prefix_reject_req_ids
+        )
+        speclink_cv_skip_drafter_req_ids.update(
+            speclink_cv_prefix_reject_realign_req_ids
+        )
+        speclink_cv_prefix_confirm_req_ids: set[str] = set()
+        if (
+            speclink_cv_config.confirm_prefix_reject_one_shot
+            and scheduler_output.speclink_cv_prefix_chunk_lens
+        ):
+            speclink_cv_prefix_confirm_req_ids = set(
+                scheduler_output.speclink_cv_prefix_chunk_lens
+            )
+            speclink_cv_skip_drafter_req_ids.update(
+                speclink_cv_prefix_confirm_req_ids
+            )
+        speclink_cv_skip_drafter_reason = ""
+        if speclink_cv_prefix_low_margin_req_ids:
+            speclink_cv_skip_drafter_reason = "prefix_low_margin_confirmation"
+        elif speclink_cv_batch_wide_prefix_reject_req_ids:
+            speclink_cv_skip_drafter_reason = (
+                "batch_wide_prefix_reject_confirmation"
+            )
+        elif (
+            speclink_cv_prefix_accepted_req_ids
+            and not speclink_cv_config.staged_drafting
+        ):
+            speclink_cv_skip_drafter_reason = (
+                "prefix_accept_confirmation"
+                if speclink_cv_config.confirm_prefix_accept_one_shot
+                else "prefix_accepted_pending_suffix"
+            )
+        elif speclink_cv_prefix_confirm_req_ids:
+            speclink_cv_skip_drafter_reason = "prefix_reject_confirmation"
+        elif speclink_cv_prefix_reject_realign_req_ids:
+            speclink_cv_skip_drafter_reason = "prefix_reject_dense_realign"
+        elif speclink_cv_skip_drafter_req_ids:
+            speclink_cv_skip_drafter_reason = "dense_realign"
+
         spec_config = self.speculative_config
         propose_drafts_after_bookkeeping = False
+        speclink_cv_selective_skip_drafter_req_ids: set[str] = set()
         if spec_config is not None:
             # Decide whether to run the drafter or zero out draft tokens.
             input_fits_in_drafter = spec_decode_common_attn_metadata is not None and (
                 spec_decode_common_attn_metadata.max_seq_len + self.num_spec_tokens
                 <= self.effective_drafter_max_model_len
             )
+            if speclink_cv_skip_drafter_reason:
+                # Scheduler-side draft-token dropping is not sufficient for
+                # SpecLink-CV realignment steps: EAGLE's drafter forward can
+                # update its own KV/cache state before the scheduler ignores the
+                # returned token ids. Only the affected rows need this guard;
+                # unrelated dense/spec rows must still draft normally so their
+                # next verifier batch shape matches EAGLE one-shot.
+                input_req_ids = set(self.input_batch.req_ids)
+                speclink_cv_selective_skip_drafter_req_ids = (
+                    speclink_cv_skip_drafter_req_ids & input_req_ids
+                )
+                if speclink_cv_selective_skip_drafter_req_ids == input_req_ids:
+                    input_fits_in_drafter = False
+                speclink_cv_append_event(
+                    speclink_cv_config,
+                    {
+                        "event": "draft_skipped_before_propose",
+                        "reason": speclink_cv_skip_drafter_reason,
+                        "request_ids": sorted(speclink_cv_skip_drafter_req_ids),
+                        "selective_request_ids": sorted(
+                            speclink_cv_selective_skip_drafter_req_ids
+                        ),
+                        "global_skip": (
+                            speclink_cv_selective_skip_drafter_req_ids
+                            == input_req_ids
+                        ),
+                        "prefix_accepted_request_ids": sorted(
+                            speclink_cv_prefix_accepted_req_ids
+                        ),
+                        "prefix_low_margin_request_ids": sorted(
+                            speclink_cv_prefix_low_margin_req_ids
+                        ),
+                        "batch_wide_prefix_reject_request_ids": sorted(
+                            speclink_cv_batch_wide_prefix_reject_req_ids
+                        ),
+                        "prefix_reject_realign_request_ids": sorted(
+                            speclink_cv_prefix_reject_realign_req_ids
+                        ),
+                        "suffix_chunk_lens": dict(
+                            scheduler_output.speclink_cv_suffix_chunk_lens
+                        ),
+                    },
+                )
             use_gpu_toks = (
                 spec_config.use_eagle()
                 or spec_config.uses_draft_model()
@@ -4499,6 +6211,26 @@ class GPUModelRunner(
                     1, device=self.device, dtype=torch.int32
                 ).expand(len(self.input_batch.req_ids), self.num_spec_tokens)
                 self._copy_draft_token_ids_to_cpu(scheduler_output, zeros_only=True)
+                if speclink_cv_skip_drafter_reason:
+                    # The skipped-drafter path intentionally returns empty drafts
+                    # for this step, but a following SpecLink-CV confirmation may
+                    # still schedule the original draft tokens from the scheduler.
+                    # Do not let the next input preparation reuse these zero draft
+                    # ids through the prev_sampled_token_ids GPU scatter fast path.
+                    self.input_batch.prev_sampled_token_ids = None
+                    self.valid_sampled_token_count_gpu = None
+                    speclink_num_draft_tokens = 0
+                    self._speclink_cv_empty_draft_req_ids = (
+                        self.input_batch.req_ids.copy()
+                    )
+                    speclink_cv_append_event(
+                        speclink_cv_config,
+                        {
+                            "event": "draft_skip_returns_empty_drafts",
+                            "reason": speclink_cv_skip_drafter_reason,
+                            "request_ids": self._speclink_cv_empty_draft_req_ids,
+                        },
+                    )
 
         with record_function_or_nullcontext("gpu_model_runner: bookkeep"):
             (
@@ -4635,10 +6367,15 @@ class GPUModelRunner(
         self.input_batch.prev_req_id_to_index = prev_req_id_to_index
 
     def take_draft_token_ids(self) -> DraftTokenIds | None:
+        if self._speclink_cv_empty_draft_req_ids is not None:
+            req_ids = self._speclink_cv_empty_draft_req_ids
+            self._speclink_cv_empty_draft_req_ids = None
+            return DraftTokenIds(req_ids, [[] for _ in req_ids], None)
         if not self.num_spec_tokens or not self._draft_token_req_ids:
             return None
         draft_token_ids, req_ids = self._get_draft_token_ids_cpu()
-        return DraftTokenIds(req_ids, draft_token_ids)
+        draft_token_probs = speclink_trace_get_latest_probs(req_ids)
+        return DraftTokenIds(req_ids, draft_token_ids, draft_token_probs)
 
     def _copy_draft_token_ids_to_cpu(
         self, scheduler_output: "SchedulerOutput", zeros_only: bool = False
@@ -4661,13 +6398,23 @@ class GPUModelRunner(
         assert self.draft_token_ids_cpu is not None
         default_stream = torch.cuda.current_stream()
         num_reqs = draft_token_ids.shape[0]
+        draft_width = (
+            int(draft_token_ids.shape[1]) if draft_token_ids.ndim >= 2 else 1
+        )
+        self._draft_token_ids_width = draft_width
         with torch.cuda.stream(self.draft_token_ids_copy_stream):
             if not zeros_only:
                 # Trigger async copy of draft token ids to cpu.
                 self.draft_token_ids_copy_stream.wait_stream(default_stream)
-                self.draft_token_ids_cpu[:num_reqs].copy_(
-                    draft_token_ids, non_blocking=True
-                )
+                if draft_width == self.num_spec_tokens:
+                    self.draft_token_ids_cpu[:num_reqs].copy_(
+                        draft_token_ids, non_blocking=True
+                    )
+                else:
+                    self.draft_token_ids_cpu[:num_reqs] = 0
+                    self.draft_token_ids_cpu[
+                        :num_reqs, :draft_width
+                    ].copy_(draft_token_ids, non_blocking=True)
             else:
                 # No copy needed, just zero-out cpu tensor.
                 self.draft_token_ids_cpu[:num_reqs] = 0
@@ -4682,7 +6429,13 @@ class GPUModelRunner(
         assert self.draft_token_ids_event is not None
         assert self.draft_token_ids_cpu is not None
         self.draft_token_ids_event.synchronize()
-        return self.draft_token_ids_cpu[: len(req_ids)].tolist(), req_ids
+        draft_rows = self.draft_token_ids_cpu[: len(req_ids)]
+        if (
+            self._draft_token_ids_width is not None
+            and 0 < self._draft_token_ids_width < self.num_spec_tokens
+        ):
+            draft_rows = draft_rows[:, : self._draft_token_ids_width]
+        return draft_rows.tolist(), req_ids
 
     def _copy_valid_sampled_token_count(
         self, next_token_ids: torch.Tensor, valid_sampled_tokens_count: torch.Tensor
@@ -4729,6 +6482,7 @@ class GPUModelRunner(
         spec_decode_metadata: SpecDecodeMetadata | None,
         common_attn_metadata: CommonAttentionMetadata,
         slot_mappings: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None,
+        max_draft_tokens: int | None = None,
     ) -> list[list[int]] | torch.Tensor:
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         spec_config = self.speculative_config
@@ -4938,6 +6692,12 @@ class GPUModelRunner(
                         spec_decode_metadata,
                         valid_sampled_tokens_count,
                     )
+                    num_rejected_tokens_gpu = (
+                        self._speclink_cv_adjust_prefix_reject_drafter_rollback(
+                            scheduler_output=scheduler_output,
+                            num_rejected_tokens_gpu=num_rejected_tokens_gpu,
+                        )
+                    )
                     total_num_tokens = common_attn_metadata.num_actual_tokens
                     # When padding the batch, token_indices is just a range
                     target_token_ids = self.input_ids.gpu[:total_num_tokens]
@@ -5002,6 +6762,19 @@ class GPUModelRunner(
                     mm_embed_inputs=mm_embed_inputs,
                     num_rejected_tokens_gpu=num_rejected_tokens_gpu,
                     slot_mappings=slot_mappings,
+                    max_draft_tokens=max_draft_tokens,
+                )
+                self._debug_dump_speclink_cv_proposer_step(
+                    stage="after_propose",
+                    scheduler_output=scheduler_output,
+                    sampled_token_ids=sampled_token_ids,
+                    target_token_ids=target_token_ids,
+                    target_positions=target_positions,
+                    target_hidden_states=target_hidden_states,
+                    next_token_ids=next_token_ids,
+                    token_indices_to_sample=token_indices_to_sample,
+                    common_attn_metadata=common_attn_metadata,
+                    draft_token_ids=draft_token_ids,
                 )
             finally:
                 speclink_trace_end_propose_context(trace_token)
@@ -5505,6 +7278,7 @@ class GPUModelRunner(
         cudagraph_runtime_mode: CUDAGraphMode | None = None,
         force_attention: bool = False,
         uniform_decode: bool = False,
+        uniform_decode_query_len: int | None = None,
         allow_microbatching: bool = True,
         skip_eplb: bool = False,
         is_profile: bool = False,
@@ -5565,7 +7339,10 @@ class GPUModelRunner(
         # When setting max_query_len = 1, we switch to and capture the optimized
         # routine of FA2 for pure decode, i.e., Flashdecode + an optimization
         # for GQA/MQA.
-        max_query_len = self.uniform_decode_query_len if uniform_decode else num_tokens
+        active_uniform_decode_query_len = (
+            uniform_decode_query_len or self.uniform_decode_query_len
+        )
+        max_query_len = active_uniform_decode_query_len if uniform_decode else num_tokens
 
         # Set num_scheduled_tokens based on num_tokens and max_num_seqs
         # for dummy run with LoRA so that the num_reqs collectively
@@ -5618,6 +7395,7 @@ class GPUModelRunner(
                 # num_tokens == num_reqs which looks like a uniform decode batch to the
                 # dispatcher; but we actually want to capture a piecewise cudagraph
                 force_uniform_decode=uniform_decode,
+                uniform_decode_query_len=active_uniform_decode_query_len,
                 # `force_has_lora` is used for cudagraph capture; because LoRA is
                 # activated later in the context manager, but we need to know the
                 # LoRA state when determining the batch descriptor for capture
@@ -6405,6 +8183,7 @@ class GPUModelRunner(
                 cudagraph_runtime_mode=CUDAGraphMode.NONE,
                 force_attention=force_attention,
                 uniform_decode=desc.uniform,
+                uniform_decode_query_len=desc.uniform_decode_query_len,
                 allow_microbatching=allow_microbatching,
                 skip_eplb=True,
                 remove_lora=False,
@@ -6415,6 +8194,7 @@ class GPUModelRunner(
             desc.num_tokens,
             cudagraph_runtime_mode=cudagraph_runtime_mode,
             uniform_decode=desc.uniform,
+            uniform_decode_query_len=desc.uniform_decode_query_len,
             allow_microbatching=allow_microbatching,
             skip_eplb=True,
             remove_lora=False,

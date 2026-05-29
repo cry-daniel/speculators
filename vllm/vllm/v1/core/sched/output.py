@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING
 
@@ -237,6 +237,61 @@ class SchedulerOutput:
     # The worker zeros the corresponding GPU memory before the blocks are used,
     # preventing stale NaN/data from corrupting attention or SSM computation.
     new_block_ids_to_zero: list[int] | None = None
+
+    # SpecLink-CV prefix chunks scheduled in this step.
+    # req_id -> prefix length. The model runner uses this to suppress the
+    # normal speculative bonus token when the prefix is fully accepted and a
+    # suffix still needs exact verification.
+    speclink_cv_prefix_chunk_lens: dict[str, int] = field(default_factory=dict)
+    speclink_cv_prefix_accepted_req_ids: set[str] = field(default_factory=set)
+    # Prefix rejects that the worker masked before local bookkeeping because
+    # they must be confirmed by a full-K one-shot verifier pass.
+    speclink_cv_prefix_reject_confirm_req_ids: set[str] = field(
+        default_factory=set
+    )
+    speclink_cv_prefix_reject_confirm_num_accepted: dict[str, int] = field(
+        default_factory=dict
+    )
+    # Prefix rejects that should commit normally but suppress the immediate
+    # drafter step and run dense target-model realignment before drafting again.
+    speclink_cv_prefix_reject_realign_req_ids: set[str] = field(
+        default_factory=set
+    )
+    # Prefix chunks whose verifier logits were too close to trust under a
+    # shape-changing h<K step. Candidates are classified by the normal
+    # prefix accept/reject masking paths first; confirmed candidates then
+    # replay the original full-K draft.
+    speclink_cv_prefix_low_margin_candidate_req_ids: set[str] = field(
+        default_factory=set
+    )
+    speclink_cv_prefix_low_margin_confirm_req_ids: set[str] = field(
+        default_factory=set
+    )
+    speclink_cv_prefix_low_margin_values: dict[str, float] = field(
+        default_factory=dict
+    )
+    # Prefix batches where at least one request rejected in the prefix chunk.
+    # When enabled, every row in that prefix verifier batch is replayed as the
+    # original full-K one-shot draft to preserve the one-shot batch shape.
+    speclink_cv_batch_wide_prefix_reject_confirm_req_ids: set[str] = field(
+        default_factory=set
+    )
+    # SpecLink-CV suffix chunks scheduled in this step.
+    # req_id -> suffix length.
+    speclink_cv_suffix_chunk_lens: dict[str, int] = field(default_factory=dict)
+    # For a prefix chunk, req_id -> skipped suffix length. If the prefix
+    # rejects, this suffix never enters the target verifier and is discarded by
+    # scheduler/request bookkeeping. Do not add it to the worker-side
+    # num_rejected_tokens_gpu: that value is relative to the current target
+    # forward, which only contains the scheduled prefix chunk.
+    speclink_cv_prefix_skipped_suffix_lens: dict[str, int] = field(
+        default_factory=dict
+    )
+    # Requests whose EAGLE drafter should not run after this target forward.
+    # Scheduler-side draft-token dropping is not enough: the drafter forward can
+    # mutate its own KV/cache state, so correctness-sensitive CV realignment
+    # steps must suppress the drafter before it executes.
+    speclink_cv_skip_drafter_req_ids: set[str] = field(default_factory=set)
 
     @classmethod
     def make_empty(cls) -> "SchedulerOutput":

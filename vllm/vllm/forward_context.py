@@ -45,6 +45,12 @@ class BatchDescriptor:
     """
     True if all the requests in the batch have the same number of tokens.
     """
+    uniform_decode_query_len: int | None = None
+    """
+    Query length for uniform decode CUDA graphs. This is normally 1 for dense
+    decode or K+1 for speculative decode. SpecLink-CV can additionally capture
+    h+1 prefix verifier graphs, so this must be part of the descriptor key.
+    """
     has_lora: bool = False
     """
     Whether this batch has active LoRA adapters.

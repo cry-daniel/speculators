@@ -3,6 +3,7 @@
 from collections.abc import Set as AbstractSet
 from dataclasses import replace
 from itertools import product
+import os
 
 from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.forward_context import BatchDescriptor
@@ -10,6 +11,27 @@ from vllm.logger import init_logger
 from vllm.lora.utils import get_captured_lora_counts
 
 logger = init_logger(__name__)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int = 0) -> int:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _round_up(value: int, multiple: int) -> int:
+    return ((value + multiple - 1) // multiple) * multiple
 
 
 class CudagraphDispatcher:
@@ -67,6 +89,43 @@ class CudagraphDispatcher:
         )
         # Default cudagraph_mode to NONE until initialize_cudagraph_keys is called
         self.cudagraph_mode = CUDAGraphMode.NONE
+        self.extra_uniform_decode_query_lens: tuple[int, ...] = ()
+
+    def _speclink_cv_extra_uniform_decode_query_lens(self) -> tuple[int, ...]:
+        if not (
+            _env_bool("SPECLINK_CV_ENABLE")
+            and _env_bool("SPECLINK_CV_PREFIX_FULL_CUDAGRAPH")
+        ):
+            return ()
+        k = max(0, self.uniform_decode_query_len - 1)
+        if k <= 1:
+            return ()
+        raw_lens = os.environ.get("SPECLINK_CV_PREFIX_CUDAGRAPH_QUERY_LENS", "")
+        query_lens: set[int] = set()
+        if raw_lens.strip():
+            for item in raw_lens.split(","):
+                item = item.strip()
+                if item:
+                    query_lens.add(int(item))
+        else:
+            force_h = _env_int("SPECLINK_CV_FORCE_PREFIX_LEN", 0)
+            if 0 < force_h < k:
+                query_lens.add(force_h + 1)
+            raw_chunks = os.environ.get(
+                "SPECLINK_CV_CANDIDATE_CHUNKS", "1,2,4,6,8,full"
+            )
+            for item in raw_chunks.split(","):
+                item = item.strip()
+                if not item or item == "full":
+                    continue
+                try:
+                    h = int(item)
+                except ValueError:
+                    continue
+                if 0 < h < k:
+                    query_lens.add(h + 1)
+            query_lens.add(k // 2 + 1)
+        return tuple(sorted(q for q in query_lens if 1 < q < self.uniform_decode_query_len))
 
     def _compute_bs_to_padded_graph_size(self) -> None:
         """Pre-compute the mapping from batch size to padded graph size."""
@@ -134,14 +193,21 @@ class CudagraphDispatcher:
         uniform_decode: bool,
         has_lora: bool,
         num_active_loras: int = 0,
+        uniform_decode_query_len: int | None = None,
     ) -> BatchDescriptor:
         max_num_seqs = self.vllm_config.scheduler_config.max_num_seqs
-        uniform_decode_query_len = self.uniform_decode_query_len
-        num_tokens_padded = self._bs_to_padded_graph_size[num_tokens]
+        query_len = uniform_decode_query_len or self.uniform_decode_query_len
+        if uniform_decode and query_len != self.uniform_decode_query_len:
+            num_tokens_padded = _round_up(num_tokens, query_len)
+        else:
+            num_tokens_padded = self._bs_to_padded_graph_size[num_tokens]
 
         if uniform_decode and self.cudagraph_mode.has_mode(CUDAGraphMode.FULL):
-            num_reqs = min(num_tokens_padded // uniform_decode_query_len, max_num_seqs)
-            assert num_tokens_padded % uniform_decode_query_len == 0
+            if num_tokens_padded % query_len != 0:
+                uniform_decode = False
+                num_reqs = min(num_tokens_padded, max_num_seqs)
+            else:
+                num_reqs = min(num_tokens_padded // query_len, max_num_seqs)
         else:
             uniform_decode = False
             num_reqs = min(num_tokens_padded, max_num_seqs)
@@ -150,6 +216,7 @@ class CudagraphDispatcher:
             num_tokens=num_tokens_padded,
             num_reqs=num_reqs,
             uniform=uniform_decode,
+            uniform_decode_query_len=query_len if uniform_decode else None,
             has_lora=has_lora,
             num_active_loras=num_active_loras,
         )
@@ -168,6 +235,10 @@ class CudagraphDispatcher:
         # This should be called only after attention backend is initialized. So we can
         # get the correct cudagraph mode after backend support is resolved.
         self.cudagraph_mode = cudagraph_mode
+        self.uniform_decode_query_len = uniform_decode_query_len
+        self.extra_uniform_decode_query_lens = (
+            self._speclink_cv_extra_uniform_decode_query_lens()
+        )
 
         # Early exit if cudagraphs are disabled
         if cudagraph_mode == CUDAGraphMode.NONE:
@@ -228,6 +299,25 @@ class CudagraphDispatcher:
                         bs, True, num_active_loras > 0, num_active_loras
                     ),
                 )
+            max_num_seqs = self.vllm_config.scheduler_config.max_num_seqs
+            max_size = self.compilation_config.max_cudagraph_capture_size or 0
+            for query_len in self.extra_uniform_decode_query_lens:
+                max_num_tokens = min(query_len * max_num_seqs, max_size)
+                for num_reqs in range(1, max_num_seqs + 1):
+                    num_tokens = query_len * num_reqs
+                    if num_tokens > max_num_tokens:
+                        break
+                    for num_active_loras in lora_cases:
+                        self.add_cudagraph_key(
+                            CUDAGraphMode.FULL,
+                            self._create_padded_batch_descriptor(
+                                num_tokens,
+                                True,
+                                num_active_loras > 0,
+                                num_active_loras,
+                                uniform_decode_query_len=query_len,
+                            ),
+                        )
 
         self.keys_initialized = True
 
@@ -237,6 +327,7 @@ class CudagraphDispatcher:
         uniform_decode: bool = False,
         has_lora: bool = False,
         num_active_loras: int = 0,
+        uniform_decode_query_len: int | None = None,
         valid_modes: AbstractSet[CUDAGraphMode] | None = None,
         invalid_modes: AbstractSet[CUDAGraphMode] | None = None,
     ) -> tuple[CUDAGraphMode, BatchDescriptor]:
@@ -300,7 +391,11 @@ class CudagraphDispatcher:
 
         normalized_uniform = uniform_decode and self.cudagraph_mode.separate_routine()
         batch_desc = self._create_padded_batch_descriptor(
-            num_tokens, normalized_uniform, has_lora, effective_num_active_loras
+            num_tokens,
+            normalized_uniform,
+            has_lora,
+            effective_num_active_loras,
+            uniform_decode_query_len=uniform_decode_query_len,
         )
 
         if CUDAGraphMode.FULL in allowed_modes:

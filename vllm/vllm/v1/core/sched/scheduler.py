@@ -32,6 +32,16 @@ from vllm.model_executor.layers.fused_moe.routed_experts_capturer import (
 )
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.multimodal.encoder_budget import MultiModalBudget
+from vllm.speclink_cv import (
+    AsyncPrefixCandidate,
+    SpecLinkCVRuntimeConfig,
+    apply_roofline_packing_policy as speclink_cv_apply_roofline_policy,
+    append_event as speclink_cv_append_event,
+    append_profile as speclink_cv_append_profile,
+    choose_prefix_len as speclink_cv_choose_prefix_len,
+    select_async_prefix_dispatch as speclink_cv_select_async_dispatch,
+    should_wait_for_global_batch_fill as speclink_cv_should_wait_for_batch_fill,
+)
 from vllm.v1.core.encoder_cache_manager import (
     EncoderCacheManager,
     EncoderDecoderCacheManager,
@@ -64,6 +74,13 @@ from vllm.v1.utils import record_function_or_nullcontext
 logger = init_logger(__name__)
 
 
+def _speclink_cv_request_order_key(request_id: str) -> tuple[int, str]:
+    raw_ordinal = request_id.split("-", 1)[0]
+    if raw_ordinal.isdigit():
+        return int(raw_ordinal), request_id
+    return 2**31 - 1, request_id
+
+
 class Scheduler(SchedulerInterface):
     def __init__(
         self,
@@ -83,6 +100,29 @@ class Scheduler(SchedulerInterface):
         self.kv_cache_config = kv_cache_config
         self.kv_events_config = vllm_config.kv_events_config
         self.parallel_config = vllm_config.parallel_config
+        self.speclink_cv_config = SpecLinkCVRuntimeConfig.from_env()
+        self.speclink_cv_scheduled_prefix: dict[str, dict[str, Any]] = {}
+        self.speclink_cv_suffix_phase_req_ids: set[str] = set()
+        self.speclink_cv_async_pending_prefix: dict[str, dict[str, Any]] = {}
+        self.speclink_cv_force_one_shot_req_ids: set[str] = set()
+        self.speclink_cv_force_one_shot_reasons: dict[str, str] = {}
+        self.speclink_cv_drop_next_draft_req_ids: set[str] = set()
+        self.speclink_cv_scheduled_suffix_lens: dict[str, int] = {}
+        self.speclink_cv_suffix_replay_prefix_lens: dict[str, int] = {}
+        self.speclink_cv_staged_suffix_pending_lens: dict[str, int] = {}
+        self.speclink_cv_dense_realign_remaining: dict[str, int] = {}
+        self.speclink_cv_lockstep_next_group_id = 1
+        self.speclink_cv_lockstep_req_to_group: dict[str, int] = {}
+        self.speclink_cv_lockstep_group_members: dict[int, set[str]] = {}
+        self.speclink_cv_lockstep_group_pending: dict[int, set[str]] = {}
+        self.speclink_cv_lockstep_held_drafts: dict[
+            str, tuple[list[int], list[float]]
+        ] = {}
+        if self.speclink_cv_config.enable:
+            logger.info(
+                "SpecLink-CV runtime config: %s",
+                self.speclink_cv_config.to_log_dict(),
+            )
         self.log_stats = log_stats
         self.observability_config = vllm_config.observability_config
         self.kv_metrics_collector: KVCacheMetricsCollector | None = None
@@ -349,6 +389,375 @@ class Scheduler(SchedulerInterface):
                 pass
         return num_new_tokens
 
+    def _speclink_cv_lockstep_is_pending(self, request_id: str) -> bool:
+        group_id = self.speclink_cv_lockstep_req_to_group.get(request_id)
+        if group_id is None:
+            return False
+        return request_id in self.speclink_cv_lockstep_group_pending.get(
+            group_id, set()
+        )
+
+    def _speclink_cv_lockstep_is_resolved_waiting(self, request_id: str) -> bool:
+        group_id = self.speclink_cv_lockstep_req_to_group.get(request_id)
+        if group_id is None:
+            return False
+        return request_id not in self.speclink_cv_lockstep_group_pending.get(
+            group_id, set()
+        )
+
+    def _speclink_cv_start_lockstep_group(
+        self, request_ids: Iterable[str], reason: str
+    ) -> None:
+        if not self.speclink_cv_config.lockstep_iteration_barrier:
+            return
+        live_req_ids = [
+            req_id
+            for req_id in sorted(
+                set(request_ids), key=_speclink_cv_request_order_key
+            )
+            if req_id in self.requests
+            and not self.requests[req_id].is_finished()
+            and req_id not in self.speclink_cv_lockstep_req_to_group
+        ]
+        if len(live_req_ids) <= 1:
+            return
+        group_id = self.speclink_cv_lockstep_next_group_id
+        self.speclink_cv_lockstep_next_group_id += 1
+        members = set(live_req_ids)
+        self.speclink_cv_lockstep_group_members[group_id] = members
+        self.speclink_cv_lockstep_group_pending[group_id] = set(members)
+        for req_id in members:
+            self.speclink_cv_lockstep_req_to_group[req_id] = group_id
+        detail = {
+            "event": "lockstep_iteration_group_started",
+            "group_id": group_id,
+            "reason": reason,
+            "request_ids": live_req_ids,
+        }
+        speclink_cv_append_event(self.speclink_cv_config, detail)
+        speclink_cv_append_profile(self.speclink_cv_config, detail)
+
+    def _speclink_cv_release_lockstep_group(
+        self, group_id: int, reason: str
+    ) -> None:
+        members = self.speclink_cv_lockstep_group_members.pop(group_id, set())
+        self.speclink_cv_lockstep_group_pending.pop(group_id, None)
+        released_draft_req_ids: list[str] = []
+        for req_id in sorted(members, key=_speclink_cv_request_order_key):
+            self.speclink_cv_lockstep_req_to_group.pop(req_id, None)
+            held = self.speclink_cv_lockstep_held_drafts.pop(req_id, None)
+            request = self.requests.get(req_id)
+            if request is None or request.is_finished() or held is None:
+                continue
+            if (
+                request.spec_token_ids
+                or req_id in self.speclink_cv_suffix_phase_req_ids
+                or req_id in self.speclink_cv_force_one_shot_req_ids
+            ):
+                continue
+            request.spec_token_ids = list(held[0])
+            request.spec_token_confidences = list(held[1])
+            released_draft_req_ids.append(req_id)
+        detail = {
+            "event": "lockstep_iteration_group_released",
+            "group_id": group_id,
+            "reason": reason,
+            "request_ids": sorted(members, key=_speclink_cv_request_order_key),
+            "released_draft_request_ids": released_draft_req_ids,
+        }
+        speclink_cv_append_event(self.speclink_cv_config, detail)
+        speclink_cv_append_profile(self.speclink_cv_config, detail)
+
+    def _speclink_cv_mark_lockstep_resolved(
+        self, request_id: str, reason: str
+    ) -> None:
+        group_id = self.speclink_cv_lockstep_req_to_group.get(request_id)
+        if group_id is None:
+            return
+        pending = self.speclink_cv_lockstep_group_pending.get(group_id)
+        if pending is None or request_id not in pending:
+            return
+        pending.discard(request_id)
+        detail = {
+            "event": "lockstep_iteration_request_resolved",
+            "group_id": group_id,
+            "request_id": request_id,
+            "reason": reason,
+            "pending_request_ids": sorted(
+                pending, key=_speclink_cv_request_order_key
+            ),
+        }
+        speclink_cv_append_event(self.speclink_cv_config, detail)
+        speclink_cv_append_profile(self.speclink_cv_config, detail)
+        if not pending:
+            self._speclink_cv_release_lockstep_group(group_id, reason)
+
+    def _speclink_cv_forget_lockstep_request(
+        self, request_id: str, reason: str
+    ) -> None:
+        group_id = self.speclink_cv_lockstep_req_to_group.pop(request_id, None)
+        self.speclink_cv_lockstep_held_drafts.pop(request_id, None)
+        if group_id is None:
+            return
+        members = self.speclink_cv_lockstep_group_members.get(group_id)
+        pending = self.speclink_cv_lockstep_group_pending.get(group_id)
+        if members is not None:
+            members.discard(request_id)
+        if pending is not None:
+            pending.discard(request_id)
+        if not members:
+            self.speclink_cv_lockstep_group_members.pop(group_id, None)
+            self.speclink_cv_lockstep_group_pending.pop(group_id, None)
+            return
+        if pending is not None and not pending:
+            self._speclink_cv_release_lockstep_group(group_id, reason)
+
+    def _speclink_cv_prepare_async_prefix_dispatch(
+        self, scheduled_timestamp: float
+    ) -> dict[str, dict[str, Any]]:
+        if not self.speclink_cv_config.allow_shape_drift_chunking:
+            return {}
+        candidates: list[AsyncPrefixCandidate] = []
+        candidate_req_ids: set[str] = set()
+        barrier_blocked_req_ids: list[str] = []
+        for request in self.running:
+            if (
+                not request.spec_token_ids
+                or request.request_id in self.speclink_cv_suffix_phase_req_ids
+                or request.request_id in self.speclink_cv_force_one_shot_req_ids
+            ):
+                if self.speclink_cv_config.global_batch_barrier:
+                    barrier_blocked_req_ids.append(request.request_id)
+                continue
+            req_id = request.request_id
+            candidate_req_ids.add(req_id)
+            draft_tokens = list(request.spec_token_ids)
+            pending_plan = self.speclink_cv_async_pending_prefix.get(req_id)
+            if pending_plan is None or pending_plan.get("draft_tokens") != draft_tokens:
+                k = len(draft_tokens)
+                logical_k = (
+                    self.num_spec_tokens
+                    if (
+                        self.speclink_cv_config.staged_drafting
+                        and 0 < k < self.num_spec_tokens
+                    )
+                    else k
+                )
+                selected_h, reason, decision = speclink_cv_choose_prefix_len(
+                    logical_k,
+                    self.speclink_cv_config,
+                    getattr(request, "spec_token_confidences", None),
+                )
+                self.speclink_cv_async_pending_prefix.pop(req_id, None)
+                staged_prefix = (
+                    self.speclink_cv_config.staged_drafting
+                    and k == selected_h
+                    and selected_h < logical_k
+                )
+                if not (
+                    0 < selected_h <= k
+                    and (selected_h < k or staged_prefix)
+                ):
+                    if self.speclink_cv_config.global_batch_barrier:
+                        barrier_blocked_req_ids.append(req_id)
+                    continue
+                pending_plan = {
+                    "request_id": req_id,
+                    "k": logical_k,
+                    "selected_h": selected_h,
+                    "suffix": [] if staged_prefix else draft_tokens[selected_h:],
+                    "suffix_len": logical_k - selected_h,
+                    "staged_drafting": staged_prefix,
+                    "reason": reason,
+                    "decision": decision,
+                    "draft_tokens": draft_tokens,
+                    "queue_enter_time": scheduled_timestamp,
+                }
+                self.speclink_cv_async_pending_prefix[req_id] = pending_plan
+                speclink_cv_append_profile(
+                    self.speclink_cv_config,
+                    {
+                        "event": "verify_chunk_queued",
+                        "phase": "prefix",
+                        "request_id": req_id,
+                        "k": logical_k,
+                        "chunk_len": selected_h,
+                        "suffix_len": pending_plan["suffix_len"],
+                        "staged_drafting": staged_prefix,
+                        "reason": reason,
+                        "confidence_sizing": (
+                            self.speclink_cv_config.confidence_sizing
+                        ),
+                        "confidence_source": decision.get(
+                            "confidence_source", ""
+                        ),
+                        "selected_benefit": decision.get("selected_benefit"),
+                    },
+                )
+            candidates.append(
+                AsyncPrefixCandidate(
+                    request_id=req_id,
+                    selected_h=int(pending_plan["selected_h"]),
+                    k=int(pending_plan["k"]),
+                    selected_benefit=float(
+                        pending_plan["decision"].get("selected_benefit") or 0.0
+                    ),
+                    queue_enter_time=float(pending_plan["queue_enter_time"]),
+                )
+            )
+
+        for req_id in list(self.speclink_cv_async_pending_prefix):
+            if req_id not in candidate_req_ids:
+                self.speclink_cv_async_pending_prefix.pop(req_id, None)
+
+        waiting_reqs = len(self.waiting) + len(self.skipped_waiting)
+        has_other_ready_work = (
+            len(candidate_req_ids) < len(self.running) or waiting_reqs > 0
+        )
+        if self.speclink_cv_config.force_decode_isolation:
+            ordered_candidates = sorted(
+                candidates, key=lambda candidate: _speclink_cv_request_order_key(
+                    candidate.request_id
+                )
+            )
+            dispatch_req_ids = (
+                {ordered_candidates[0].request_id}
+                if ordered_candidates
+                else set()
+            )
+            selected_tokens = sum(
+                candidate.selected_h
+                for candidate in ordered_candidates
+                if candidate.request_id in dispatch_req_ids
+            )
+            dispatch_detail = {
+                "reason": "force_decode_isolation_dispatch",
+                "candidate_count": len(candidates),
+                "selected_count": len(dispatch_req_ids),
+                "dispatch_count": len(dispatch_req_ids),
+                "selected_tokens": selected_tokens,
+                "dispatch_tokens": selected_tokens,
+                "token_budget": self.max_num_scheduled_tokens,
+                "seq_budget": 1,
+                "allow_batched_prefix": False,
+                "global_batch_barrier": self.speclink_cv_config.global_batch_barrier,
+                "waiting_reqs": waiting_reqs,
+                "has_other_ready_work": has_other_ready_work,
+            }
+        elif self.speclink_cv_config.global_batch_barrier:
+            can_admit_waiting = speclink_cv_should_wait_for_batch_fill(
+                waiting_reqs=waiting_reqs,
+                running_reqs=len(self.running),
+                max_running_reqs=self.max_num_running_reqs,
+            )
+            if can_admit_waiting:
+                speclink_cv_append_profile(
+                    self.speclink_cv_config,
+                    {
+                        "event": "async_queue_step",
+                        "reason": "global_batch_barrier_wait_for_batch_fill",
+                        "candidate_count": len(candidates),
+                        "running_reqs": len(self.running),
+                        "max_running_reqs": self.max_num_running_reqs,
+                        "waiting_reqs": waiting_reqs,
+                        "pending_request_ids": [
+                            candidate.request_id for candidate in candidates
+                        ],
+                        "dispatch_request_ids": [],
+                        "barrier_blocked_request_ids": sorted(
+                            set(barrier_blocked_req_ids)
+                        ),
+                        "has_other_ready_work": has_other_ready_work,
+                    },
+                )
+                return {}
+            if barrier_blocked_req_ids or len(candidates) != len(self.running):
+                speclink_cv_append_profile(
+                    self.speclink_cv_config,
+                    {
+                        "event": "async_queue_step",
+                        "reason": "global_batch_barrier_wait",
+                        "candidate_count": len(candidates),
+                        "running_reqs": len(self.running),
+                        "pending_request_ids": [
+                            candidate.request_id for candidate in candidates
+                        ],
+                        "dispatch_request_ids": [],
+                        "barrier_blocked_request_ids": sorted(
+                            set(barrier_blocked_req_ids)
+                        ),
+                        "has_other_ready_work": has_other_ready_work,
+                    },
+                )
+                return {}
+            token_budget = self.max_num_scheduled_tokens
+            selected_tokens = sum(candidate.selected_h for candidate in candidates)
+            dispatch_detail = {
+                "reason": "global_batch_barrier_dispatch",
+                "candidate_count": len(candidates),
+                "selected_count": len(candidates),
+                "dispatch_count": len(candidates),
+                "selected_tokens": selected_tokens,
+                "dispatch_tokens": selected_tokens,
+                "token_budget": token_budget,
+                "seq_budget": self.max_num_running_reqs,
+                "allow_batched_prefix": self.speclink_cv_config.allow_batched_prefix,
+                "global_batch_barrier": True,
+                "waiting_reqs": waiting_reqs,
+                "has_other_ready_work": has_other_ready_work,
+            }
+            dispatch_req_ids = {candidate.request_id for candidate in candidates}
+        else:
+            dispatch_req_ids, dispatch_detail = speclink_cv_select_async_dispatch(
+                candidates,
+                config=self.speclink_cv_config,
+                token_budget=self.max_num_scheduled_tokens,
+                seq_budget=self.max_num_running_reqs,
+                now=scheduled_timestamp,
+                has_other_ready_work=has_other_ready_work,
+            )
+        if candidates:
+            speclink_cv_append_profile(
+                self.speclink_cv_config,
+                {
+                    "event": "async_queue_step",
+                    **dispatch_detail,
+                    "pending_request_ids": [
+                        candidate.request_id for candidate in candidates
+                    ],
+                    "dispatch_request_ids": sorted(dispatch_req_ids),
+                    "has_other_ready_work": has_other_ready_work,
+                },
+            )
+
+        dispatch_plans: dict[str, dict[str, Any]] = {}
+        for req_id in dispatch_req_ids:
+            plan = self.speclink_cv_async_pending_prefix.pop(req_id, None)
+            if plan is None:
+                continue
+            queue_wait_ms = max(
+                0.0,
+                (scheduled_timestamp - float(plan["queue_enter_time"])) * 1000.0,
+            )
+            plan["queue_wait_ms"] = queue_wait_ms
+            plan["async_dispatch_reason"] = dispatch_detail.get("reason", "")
+            dispatch_plans[req_id] = plan
+            speclink_cv_append_profile(
+                self.speclink_cv_config,
+                {
+                    "event": "verify_chunk_dequeued",
+                    "phase": "prefix",
+                    "request_id": req_id,
+                    "k": plan["k"],
+                    "chunk_len": plan["selected_h"],
+                    "suffix_len": len(plan["suffix"]),
+                    "queue_wait_ms": queue_wait_ms,
+                    "async_dispatch_reason": plan["async_dispatch_reason"],
+                    "async_queue_detail": dispatch_detail,
+                },
+            )
+        return dispatch_plans
+
     def schedule(self) -> SchedulerOutput:
         # NOTE(woosuk) on the scheduling algorithm:
         # There's no "decoding phase" nor "prefill phase" in the scheduler.
@@ -378,9 +787,354 @@ class Scheduler(SchedulerInterface):
         encoder_compute_budget = self.max_num_encoder_input_tokens
         # Spec decode-related.
         scheduled_spec_decode_tokens: dict[str, list[int]] = {}
+        speclink_cv_prefix_chunk_lens: dict[str, int] = {}
+        speclink_cv_suffix_chunk_lens: dict[str, int] = {}
+        speclink_cv_prefix_skipped_suffix_lens: dict[str, int] = {}
+        speclink_cv_skip_drafter_req_ids: set[str] = set()
+        speclink_cv_prefix_seq_budget = (
+            self.speclink_cv_config.effective_seq_budget(self.max_num_running_reqs)
+            if self.speclink_cv_config.enable
+            else self.max_num_running_reqs
+        )
+        speclink_cv_prefix_chunks_this_step = 0
+        speclink_cv_shadow_token_budget_extra = 0
 
         # For logging.
         scheduled_timestamp = time.monotonic()
+        speclink_cv_async_dispatch_plans: dict[str, dict[str, Any]] = {}
+        if (
+            self.speclink_cv_config.enable
+            and self.speclink_cv_config.async_queue
+            and not self.scheduler_config.async_scheduling
+        ):
+            speclink_cv_async_dispatch_plans = (
+                self._speclink_cv_prepare_async_prefix_dispatch(
+                    scheduled_timestamp
+                )
+            )
+            if (
+                self.speclink_cv_config.global_batch_barrier
+                and speclink_cv_async_dispatch_plans
+            ):
+                dispatch_req_ids = set(speclink_cv_async_dispatch_plans)
+                original_index = {
+                    request.request_id: index
+                    for index, request in enumerate(self.running)
+                }
+                self.running.sort(
+                    key=lambda request: (
+                        0 if request.request_id in dispatch_req_ids else 1,
+                        (
+                            _speclink_cv_request_order_key(request.request_id)
+                            if request.request_id in dispatch_req_ids
+                            else (
+                                original_index[request.request_id],
+                                request.request_id,
+                            )
+                        ),
+                    )
+                )
+                speclink_cv_append_profile(
+                    self.speclink_cv_config,
+                    {
+                        "event": "global_batch_barrier_reordered",
+                        "phase": "prefix",
+                        "reason": "request_ordinal_row_alignment",
+                        "dispatch_request_ids": [
+                            request.request_id
+                            for request in self.running
+                            if request.request_id in dispatch_req_ids
+                        ],
+                    },
+                )
+        if (
+            self.speclink_cv_config.enable
+            and self.speclink_cv_config.confirmation_full_active_set
+            and not self.scheduler_config.async_scheduling
+            and self.speclink_cv_force_one_shot_req_ids
+        ):
+            running_force_req_ids = {
+                request.request_id
+                for request in self.running
+                if request.spec_token_ids
+                and request.request_id in self.speclink_cv_force_one_shot_req_ids
+            }
+            if running_force_req_ids:
+                active_spec_req_ids = {
+                    request.request_id
+                    for request in self.running
+                    if request.spec_token_ids
+                    and request.request_id not in self.speclink_cv_suffix_phase_req_ids
+                }
+                suffix_spec_req_ids = {
+                    request.request_id
+                    for request in self.running
+                    if request.spec_token_ids
+                    and request.request_id in self.speclink_cv_suffix_phase_req_ids
+                }
+                expanded_req_ids = sorted(
+                    active_spec_req_ids - self.speclink_cv_force_one_shot_req_ids
+                )
+                for req_id in active_spec_req_ids:
+                    if req_id not in self.speclink_cv_force_one_shot_req_ids:
+                        self.speclink_cv_force_one_shot_req_ids.add(req_id)
+                        self.speclink_cv_force_one_shot_reasons[
+                            req_id
+                        ] = "full_active_set_confirmation"
+                    self.speclink_cv_async_pending_prefix.pop(req_id, None)
+                    speclink_cv_async_dispatch_plans.pop(req_id, None)
+                if expanded_req_ids:
+                    detail = {
+                        "event": "confirmation_full_active_set_expanded",
+                        "phase": "one_shot_confirmation",
+                        "running_force_request_ids": sorted(
+                            running_force_req_ids
+                        ),
+                        "expanded_request_ids": expanded_req_ids,
+                        "active_spec_request_ids": sorted(active_spec_req_ids),
+                        "suffix_spec_request_ids": sorted(suffix_spec_req_ids),
+                    }
+                    speclink_cv_append_event(self.speclink_cv_config, detail)
+                    speclink_cv_append_profile(self.speclink_cv_config, detail)
+        speclink_cv_grouped_force_one_shot_req_ids: set[str] = set()
+        if (
+            self.speclink_cv_config.enable
+            and not self.scheduler_config.async_scheduling
+        ):
+            speclink_cv_grouped_force_one_shot_req_ids = {
+                request.request_id
+                for request in self.running
+                if request.request_id in self.speclink_cv_force_one_shot_req_ids
+                and request.spec_token_ids
+                and (
+                    self.speclink_cv_config.global_batch_barrier
+                    or self.speclink_cv_config.confirmation_full_active_set
+                    or self.speclink_cv_force_one_shot_reasons.get(
+                        request.request_id
+                    )
+                    == "batch_wide_prefix_reject_confirmation"
+                )
+            }
+            if not speclink_cv_grouped_force_one_shot_req_ids:
+                pass
+            elif (
+                len(speclink_cv_grouped_force_one_shot_req_ids) <= 1
+                and not self.speclink_cv_config.confirmation_full_active_set
+            ):
+                speclink_cv_grouped_force_one_shot_req_ids.clear()
+            else:
+                original_index = {
+                    request.request_id: index
+                    for index, request in enumerate(self.running)
+                }
+                self.running.sort(
+                    key=lambda request: (
+                        0
+                        if request.request_id
+                        in speclink_cv_grouped_force_one_shot_req_ids
+                        else 1,
+                        (
+                            _speclink_cv_request_order_key(request.request_id)
+                            if request.request_id
+                            in speclink_cv_grouped_force_one_shot_req_ids
+                            else (
+                                original_index[request.request_id],
+                                request.request_id,
+                            )
+                        ),
+                    )
+                )
+                speclink_cv_append_profile(
+                    self.speclink_cv_config,
+                    {
+                        "event": "global_batch_barrier_reordered",
+                        "phase": "one_shot_confirmation",
+                        "reason": (
+                            "all_force_one_shot_confirmation"
+                            if self.speclink_cv_config.global_batch_barrier
+                            else "batch_wide_prefix_reject_confirmation"
+                        ),
+                        "confirmation_reasons": {
+                            req_id: self.speclink_cv_force_one_shot_reasons.get(
+                                req_id, ""
+                            )
+                            for req_id in sorted(
+                                speclink_cv_grouped_force_one_shot_req_ids
+                            )
+                        },
+                        "dispatch_request_ids": [
+                            request.request_id
+                            for request in self.running
+                            if request.request_id
+                            in speclink_cv_grouped_force_one_shot_req_ids
+                        ],
+                    },
+                )
+        speclink_cv_isolated_req_id: str | None = None
+        if (
+            self.speclink_cv_config.enable
+            and not self.scheduler_config.async_scheduling
+        ):
+            for request in self.running:
+                if request.request_id in self.speclink_cv_suffix_phase_req_ids:
+                    if (
+                        not self.speclink_cv_config.lockstep_iteration_barrier
+                        and not self.speclink_cv_config.allow_batched_suffix
+                    ):
+                        speclink_cv_isolated_req_id = request.request_id
+                    break
+            if (
+                speclink_cv_isolated_req_id is None
+                and self.speclink_cv_config.allow_batched_suffix
+                and self.speclink_cv_suffix_phase_req_ids
+            ):
+                original_index = {
+                    request.request_id: index
+                    for index, request in enumerate(self.running)
+                }
+                self.running.sort(
+                    key=lambda request: (
+                        0
+                        if request.request_id
+                        in self.speclink_cv_suffix_phase_req_ids
+                        else 1,
+                        (
+                            _speclink_cv_request_order_key(request.request_id)
+                            if request.request_id
+                            in self.speclink_cv_suffix_phase_req_ids
+                            else (
+                                original_index[request.request_id],
+                                request.request_id,
+                            )
+                        ),
+                    )
+                )
+                suffix_req_ids = [
+                    request.request_id
+                    for request in self.running
+                    if request.request_id in self.speclink_cv_suffix_phase_req_ids
+                ]
+                if suffix_req_ids:
+                    speclink_cv_append_profile(
+                        self.speclink_cv_config,
+                        {
+                            "event": "batched_suffix_reordered",
+                            "phase": "suffix",
+                            "suffix_request_ids": suffix_req_ids,
+                            "allow_batched_suffix": True,
+                        },
+                    )
+            if (
+                self.speclink_cv_config.lockstep_iteration_barrier
+                and self.speclink_cv_suffix_phase_req_ids
+            ):
+                original_index = {
+                    request.request_id: index
+                    for index, request in enumerate(self.running)
+                }
+                self.running.sort(
+                    key=lambda request: (
+                        0
+                        if request.request_id
+                        in self.speclink_cv_suffix_phase_req_ids
+                        else 1,
+                        (
+                            _speclink_cv_request_order_key(request.request_id)
+                            if request.request_id
+                            in self.speclink_cv_suffix_phase_req_ids
+                            else (
+                                original_index[request.request_id],
+                                request.request_id,
+                            )
+                        ),
+                    )
+                )
+                suffix_req_ids = [
+                    request.request_id
+                    for request in self.running
+                    if request.request_id in self.speclink_cv_suffix_phase_req_ids
+                ]
+                if suffix_req_ids:
+                    speclink_cv_append_profile(
+                        self.speclink_cv_config,
+                        {
+                            "event": "lockstep_suffix_batch_reordered",
+                            "phase": "suffix",
+                            "suffix_request_ids": suffix_req_ids,
+                        },
+                    )
+            if speclink_cv_isolated_req_id is None:
+                for request in self.running:
+                    if (
+                        request.request_id in self.speclink_cv_force_one_shot_req_ids
+                        and request.request_id
+                        not in speclink_cv_grouped_force_one_shot_req_ids
+                    ):
+                        speclink_cv_isolated_req_id = request.request_id
+                        break
+            if speclink_cv_isolated_req_id is None:
+                for request in self.running:
+                    if (
+                        request.request_id in self.speclink_cv_dense_realign_remaining
+                        and not self.speclink_cv_config.allow_batched_dense_realign
+                    ):
+                        speclink_cv_isolated_req_id = request.request_id
+                        break
+            if (
+                speclink_cv_isolated_req_id is None
+                and not self.speclink_cv_config.allow_batched_prefix
+                and speclink_cv_async_dispatch_plans
+            ):
+                speclink_cv_isolated_req_id = sorted(
+                    speclink_cv_async_dispatch_plans
+                )[0]
+            if (
+                speclink_cv_isolated_req_id is None
+                and self.speclink_cv_config.global_batch_barrier
+                and self.speclink_cv_config.allow_batched_dense_realign
+            ):
+                dense_realign_req_ids = {
+                    request.request_id
+                    for request in self.running
+                    if request.request_id
+                    in self.speclink_cv_dense_realign_remaining
+                }
+                if dense_realign_req_ids:
+                    self.running.sort(
+                        key=lambda request: _speclink_cv_request_order_key(
+                            request.request_id
+                        )
+                    )
+                    speclink_cv_append_profile(
+                        self.speclink_cv_config,
+                        {
+                            "event": "global_batch_barrier_reordered",
+                            "phase": "dense_realign",
+                            "reason": "request_ordinal_row_alignment",
+                            "dense_realign_request_ids": sorted(
+                                dense_realign_req_ids
+                            ),
+                            "dispatch_request_ids": [
+                                request.request_id for request in self.running
+                            ],
+                        },
+                    )
+
+        if (
+            speclink_cv_isolated_req_id is None
+            and self.speclink_cv_config.force_decode_isolation
+            and self.running
+        ):
+            speclink_cv_isolated_req_id = self.running[0].request_id
+            speclink_cv_append_profile(
+                self.speclink_cv_config,
+                {
+                    "event": "decode_isolation_selected",
+                    "request_id": speclink_cv_isolated_req_id,
+                    "running_reqs": len(self.running),
+                    "reason": "force_decode_isolation",
+                },
+            )
 
         self.kv_cache_manager.new_step_starts()
 
@@ -388,6 +1142,59 @@ class Scheduler(SchedulerInterface):
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
+            if self._speclink_cv_lockstep_is_resolved_waiting(
+                request.request_id
+            ):
+                speclink_cv_append_profile(
+                    self.speclink_cv_config,
+                    {
+                        "event": "verify_chunk_waiting",
+                        "phase": "lockstep_iteration_barrier",
+                        "request_id": request.request_id,
+                        "reason": "waiting_for_iteration_group",
+                    },
+                )
+                req_index += 1
+                continue
+            if (
+                speclink_cv_isolated_req_id is not None
+                and request.request_id != speclink_cv_isolated_req_id
+            ):
+                speclink_cv_append_profile(
+                    self.speclink_cv_config,
+                    {
+                        "event": "verify_chunk_waiting",
+                        "phase": "isolated_step",
+                        "request_id": request.request_id,
+                        "isolated_request_id": speclink_cv_isolated_req_id,
+                        "reason": "conservative_exact_isolation",
+                    },
+                )
+                req_index += 1
+                continue
+            if (
+                speclink_cv_isolated_req_id is None
+                and speclink_cv_grouped_force_one_shot_req_ids
+                and request.request_id
+                not in speclink_cv_grouped_force_one_shot_req_ids
+                and request.spec_token_ids
+            ):
+                speclink_cv_append_profile(
+                    self.speclink_cv_config,
+                    {
+                        "event": "verify_chunk_waiting",
+                        "phase": "one_shot",
+                        "request_id": request.request_id,
+                        "grouped_request_ids": sorted(
+                            speclink_cv_grouped_force_one_shot_req_ids
+                        ),
+                        "reason": (
+                            "batch_wide_prefix_reject_group_barrier"
+                        ),
+                    },
+                )
+                req_index += 1
+                continue
 
             if (
                 request.num_output_placeholders > 0
@@ -405,11 +1212,274 @@ class Scheduler(SchedulerInterface):
                 req_index += 1
                 continue
 
+            speclink_cv_prefix_plan: dict[str, Any] | None = None
+            if (
+                self.speclink_cv_config.enable
+                and not self.scheduler_config.async_scheduling
+                and request.spec_token_ids
+                and request.request_id not in self.speclink_cv_suffix_phase_req_ids
+            ):
+                if request.request_id in self.speclink_cv_force_one_shot_req_ids:
+                    self.speclink_cv_force_one_shot_req_ids.discard(
+                        request.request_id
+                    )
+                    fallback_reason = self.speclink_cv_force_one_shot_reasons.pop(
+                        request.request_id, "post_suffix_realign"
+                    )
+                    self.speclink_cv_async_pending_prefix.pop(
+                        request.request_id, None
+                    )
+                    speclink_cv_append_event(
+                        self.speclink_cv_config,
+                        {
+                            "event": "force_one_shot",
+                            "request_id": request.request_id,
+                            "k": len(request.spec_token_ids),
+                            "reason": fallback_reason,
+                            "grouped_batch_wide_confirmation": (
+                                request.request_id
+                                in speclink_cv_grouped_force_one_shot_req_ids
+                            ),
+                        },
+                    )
+                    speclink_cv_append_profile(
+                        self.speclink_cv_config,
+                        {
+                            "event": "verify_chunk_decision",
+                            "phase": "one_shot",
+                            "request_id": request.request_id,
+                            "k": len(request.spec_token_ids),
+                            "scheduled_chunk_len": len(request.spec_token_ids),
+                            "suffix_len": 0,
+                            "fallback_reason": fallback_reason,
+                            "grouped_batch_wide_confirmation": (
+                                request.request_id
+                                in speclink_cv_grouped_force_one_shot_req_ids
+                            ),
+                        },
+                    )
+                elif not self.speclink_cv_config.allow_shape_drift_chunking:
+                    self.speclink_cv_async_pending_prefix.pop(
+                        request.request_id, None
+                    )
+                    k = len(request.spec_token_ids)
+                    speclink_cv_append_event(
+                        self.speclink_cv_config,
+                        {
+                            "event": "shape_drift_guard_one_shot",
+                            "request_id": request.request_id,
+                            "k": k,
+                            "reason": "verifier_shape_exactness_guard",
+                            "async_queue": self.speclink_cv_config.async_queue,
+                            "allow_shape_drift_chunking": (
+                                self.speclink_cv_config.allow_shape_drift_chunking
+                            ),
+                        },
+                    )
+                    speclink_cv_append_profile(
+                        self.speclink_cv_config,
+                        {
+                            "event": "verify_chunk_decision",
+                            "phase": "one_shot",
+                            "request_id": request.request_id,
+                            "k": k,
+                            "scheduled_chunk_len": k,
+                            "suffix_len": 0,
+                            "fallback_reason": (
+                                "verifier_shape_exactness_guard"
+                            ),
+                            "async_queue": self.speclink_cv_config.async_queue,
+                            "allow_shape_drift_chunking": (
+                                self.speclink_cv_config.allow_shape_drift_chunking
+                            ),
+                        },
+                    )
+                elif self.speclink_cv_config.async_queue:
+                    if request.request_id in speclink_cv_async_dispatch_plans:
+                        speclink_cv_prefix_plan = (
+                            speclink_cv_async_dispatch_plans[request.request_id]
+                        )
+                    elif request.request_id in self.speclink_cv_async_pending_prefix:
+                        pending_plan = self.speclink_cv_async_pending_prefix[
+                            request.request_id
+                        ]
+                        speclink_cv_append_profile(
+                            self.speclink_cv_config,
+                            {
+                                "event": "verify_chunk_waiting",
+                                "phase": "prefix",
+                                "request_id": request.request_id,
+                                "k": pending_plan["k"],
+                                "chunk_len": pending_plan["selected_h"],
+                                "suffix_len": len(pending_plan["suffix"]),
+                                "queue_wait_ms": max(
+                                    0.0,
+                                    (
+                                        scheduled_timestamp
+                                        - float(pending_plan["queue_enter_time"])
+                                    )
+                                    * 1000.0,
+                                ),
+                            },
+                        )
+                        req_index += 1
+                        continue
+                else:
+                    sync_conservative_fallback_one_shot = False
+                    if not self.speclink_cv_config.allow_batched_prefix:
+                        sync_conservative_fallback_one_shot = True
+                        k = len(request.spec_token_ids)
+                        speclink_cv_append_event(
+                            self.speclink_cv_config,
+                            {
+                                "event": "sync_conservative_fallback_one_shot",
+                                "request_id": request.request_id,
+                                "k": k,
+                                "reason": "sync_exactness_guard",
+                            },
+                        )
+                        speclink_cv_append_profile(
+                            self.speclink_cv_config,
+                            {
+                                "event": "verify_chunk_decision",
+                                "phase": "one_shot",
+                                "request_id": request.request_id,
+                                "k": k,
+                                "scheduled_chunk_len": k,
+                                "suffix_len": 0,
+                                "fallback_reason": (
+                                    "sync_conservative_exactness_guard"
+                                ),
+                                "running_reqs": len(self.running),
+                                "allow_batched_prefix": (
+                                    self.speclink_cv_config.allow_batched_prefix
+                                ),
+                            },
+                        )
+                    elif (
+                        speclink_cv_prefix_chunks_this_step
+                        >= speclink_cv_prefix_seq_budget
+                    ):
+                        speclink_cv_append_profile(
+                            self.speclink_cv_config,
+                            {
+                                "event": "verify_chunk_deferred",
+                                "phase": "prefix",
+                                "request_id": request.request_id,
+                                "reason": "prefix_seq_budget",
+                                "prefix_seq_budget": speclink_cv_prefix_seq_budget,
+                                "allow_batched_prefix": (
+                                    self.speclink_cv_config.allow_batched_prefix
+                                ),
+                            },
+                        )
+                        req_index += 1
+                        continue
+                    k = len(request.spec_token_ids)
+                    logical_k = (
+                        self.num_spec_tokens
+                        if (
+                            self.speclink_cv_config.staged_drafting
+                            and 0 < k < self.num_spec_tokens
+                        )
+                        else k
+                    )
+                    if sync_conservative_fallback_one_shot:
+                        selected_h = logical_k
+                        reason = "sync_conservative_fallback_one_shot"
+                        decision = {}
+                    else:
+                        selected_h, reason, decision = speclink_cv_choose_prefix_len(
+                            logical_k,
+                            self.speclink_cv_config,
+                            getattr(request, "spec_token_confidences", None),
+                        )
+                        selected_h, reason, decision = (
+                            speclink_cv_apply_roofline_policy(
+                                k=logical_k,
+                                selected_h=selected_h,
+                                reason=reason,
+                                decision=decision,
+                                config=self.speclink_cv_config,
+                                candidate_seq_count=min(
+                                    len(self.running), speclink_cv_prefix_seq_budget
+                                ),
+                                token_budget=self.max_num_scheduled_tokens,
+                                seq_budget=self.max_num_running_reqs,
+                            )
+                        )
+                    staged_prefix = (
+                        self.speclink_cv_config.staged_drafting
+                        and k == selected_h
+                        and selected_h < logical_k
+                    )
+                    if 0 < selected_h <= k and (
+                        selected_h < k or staged_prefix
+                    ):
+                        suffix = (
+                            [] if staged_prefix
+                            else request.spec_token_ids[selected_h:]
+                        )
+                        speclink_cv_prefix_plan = {
+                            "request_id": request.request_id,
+                            "k": logical_k,
+                            "selected_h": selected_h,
+                            "suffix": suffix,
+                            "suffix_len": logical_k - selected_h,
+                            "staged_drafting": staged_prefix,
+                            "reason": reason,
+                            "decision": decision,
+                        }
+                    elif (
+                        self.speclink_cv_config.roofline_packing
+                        and reason == "roofline_fallback_one_shot"
+                    ):
+                        speclink_cv_append_event(
+                            self.speclink_cv_config,
+                            {
+                                "event": "roofline_fallback_one_shot",
+                                "request_id": request.request_id,
+                                "k": k,
+                                "selected_h": selected_h,
+                                "reason": reason,
+                                "confidence_sizing": (
+                                    self.speclink_cv_config.confidence_sizing
+                                ),
+                                "confidence_source": decision.get(
+                                    "confidence_source", ""
+                                ),
+                                "selected_benefit": decision.get(
+                                    "selected_benefit"
+                                ),
+                                "roofline": decision.get("roofline", {}),
+                            },
+                        )
+                        speclink_cv_append_profile(
+                            self.speclink_cv_config,
+                            {
+                                "event": "verify_chunk_decision",
+                                "phase": "one_shot",
+                                "fallback_reason": "roofline_fallback_one_shot",
+                                "request_id": request.request_id,
+                                "k": k,
+                                "selected_h": selected_h,
+                                "scheduled_chunk_len": k,
+                                "suffix_len": 0,
+                                "reason": reason,
+                                "confidence_sizing": (
+                                    self.speclink_cv_config.confidence_sizing
+                                ),
+                                "roofline": decision.get("roofline", {}),
+                            },
+                        )
+
             num_new_tokens = (
                 request.num_tokens_with_spec
                 + request.num_output_placeholders
                 - request.num_computed_tokens
             )
+            if speclink_cv_prefix_plan is not None:
+                num_new_tokens -= len(speclink_cv_prefix_plan["suffix"])
             if 0 < self.scheduler_config.long_prefill_token_threshold < num_new_tokens:
                 num_new_tokens = self.scheduler_config.long_prefill_token_threshold
             num_new_tokens = min(num_new_tokens, token_budget)
@@ -419,6 +1489,26 @@ class Scheduler(SchedulerInterface):
             num_new_tokens = min(
                 num_new_tokens, self.max_model_len - 1 - request.num_computed_tokens
             )
+            num_new_tokens_for_slots = num_new_tokens
+            speclink_cv_token_budget_debit = num_new_tokens
+            if speclink_cv_prefix_plan is not None:
+                # SpecLink-CV reduces target-model compute by scheduling only a
+                # prefix verifier chunk, but it still reserves the full one-shot
+                # draft slot range. Keeping the physical block layout aligned
+                # with EAGLE3 one-shot avoids later verifier drift from block
+                # allocation differences while preserving suffix compute saving.
+                # It must also charge the scheduler token budget as if the full
+                # one-shot verifier ran; otherwise the saved prefix tokens can
+                # admit extra waiting requests into the same TLM batch, changing
+                # active-batch shape and low-margin greedy decisions.
+                num_new_tokens_for_slots = min(
+                    num_new_tokens + len(speclink_cv_prefix_plan["suffix"]),
+                    self.max_model_len - 1 - request.num_computed_tokens,
+                )
+                speclink_cv_token_budget_debit = min(
+                    max(num_new_tokens, num_new_tokens_for_slots),
+                    token_budget,
+                )
 
             # Schedule encoder inputs.
             encoder_inputs_to_schedule = None
@@ -466,7 +1556,7 @@ class Scheduler(SchedulerInterface):
                 while True:
                     new_blocks = self.kv_cache_manager.allocate_slots(
                         request,
-                        num_new_tokens,
+                        num_new_tokens_for_slots,
                         num_lookahead_tokens=self.num_lookahead_tokens,
                     )
 
@@ -518,8 +1608,17 @@ class Scheduler(SchedulerInterface):
             request_id = request.request_id
             req_to_new_blocks[request_id] = new_blocks
             num_scheduled_tokens[request_id] = num_new_tokens
-            token_budget -= num_new_tokens
+            token_budget -= speclink_cv_token_budget_debit
+            if speclink_cv_token_budget_debit > num_new_tokens:
+                speclink_cv_shadow_token_budget_extra += (
+                    speclink_cv_token_budget_debit - num_new_tokens
+                )
             req_index += 1
+            if (
+                self.speclink_cv_config.enable
+                and request_id in self.speclink_cv_dense_realign_remaining
+            ):
+                speclink_cv_skip_drafter_req_ids.add(request_id)
 
             # Speculative decode related.
             if request.spec_token_ids:
@@ -534,10 +1633,234 @@ class Scheduler(SchedulerInterface):
                     if len(spec_token_ids) > num_scheduled_spec_tokens:
                         spec_token_ids = spec_token_ids[:num_scheduled_spec_tokens]
                     scheduled_spec_decode_tokens[request.request_id] = spec_token_ids
+                    if (
+                        speclink_cv_prefix_plan is not None
+                        and len(spec_token_ids) < speclink_cv_prefix_plan["k"]
+                    ):
+                        actual_h = len(spec_token_ids)
+                        if speclink_cv_prefix_plan.get("staged_drafting"):
+                            suffix = []
+                            suffix_len = int(
+                                speclink_cv_prefix_plan.get(
+                                    "suffix_len",
+                                    speclink_cv_prefix_plan["k"] - actual_h,
+                                )
+                            )
+                        else:
+                            suffix = request.spec_token_ids[actual_h:]
+                            suffix_len = len(suffix)
+                        speclink_cv_prefix_plan["selected_h"] = actual_h
+                        speclink_cv_prefix_plan["suffix"] = suffix
+                        speclink_cv_prefix_plan["suffix_len"] = suffix_len
+                        self.speclink_cv_scheduled_prefix[request.request_id] = (
+                            speclink_cv_prefix_plan
+                        )
+                        speclink_cv_prefix_chunk_lens[request.request_id] = actual_h
+                        speclink_cv_prefix_skipped_suffix_lens[
+                            request.request_id
+                        ] = suffix_len
+                        speclink_cv_prefix_chunks_this_step += 1
+                        if (
+                            self.speclink_cv_config.recompute_committed_prefix
+                            or self.speclink_cv_config.prefix_no_kv_write
+                        ):
+                            speclink_cv_skip_drafter_req_ids.add(
+                                request.request_id
+                            )
+                        speclink_cv_append_event(
+                            self.speclink_cv_config,
+                            {
+                                "event": "prefix_scheduled",
+                                "request_id": request.request_id,
+                                "k": speclink_cv_prefix_plan["k"],
+                                "selected_h": actual_h,
+                                "suffix_len": suffix_len,
+                                "staged_drafting": bool(
+                                    speclink_cv_prefix_plan.get(
+                                        "staged_drafting"
+                                    )
+                                ),
+                                "reason": speclink_cv_prefix_plan["reason"],
+                                "confidence_sizing": (
+                                    self.speclink_cv_config.confidence_sizing
+                                ),
+                                "confidence_source": (
+                                    speclink_cv_prefix_plan["decision"].get(
+                                        "confidence_source", ""
+                                    )
+                                ),
+                                "selected_benefit": (
+                                    speclink_cv_prefix_plan["decision"].get(
+                                        "selected_benefit"
+                                    )
+                                ),
+                                "calibration_path": (
+                                    speclink_cv_prefix_plan["decision"].get(
+                                        "calibration_path", ""
+                                    )
+                                ),
+                                "async_queue": self.speclink_cv_config.async_queue,
+                                "allow_batched_prefix": (
+                                    self.speclink_cv_config.allow_batched_prefix
+                                ),
+                                "recompute_committed_prefix": (
+                                    self.speclink_cv_config.recompute_committed_prefix
+                                ),
+                                "prefix_seq_budget": speclink_cv_prefix_seq_budget,
+                                "isolated_request_id": speclink_cv_isolated_req_id,
+                                "queue_wait_ms": speclink_cv_prefix_plan.get(
+                                    "queue_wait_ms", 0.0
+                                ),
+                                "async_dispatch_reason": (
+                                    speclink_cv_prefix_plan.get(
+                                        "async_dispatch_reason", ""
+                                    )
+                                ),
+                                **(
+                                    {
+                                        "prefix_tokens": list(spec_token_ids),
+                                        "suffix_tokens": list(suffix),
+                                        "decision": speclink_cv_prefix_plan[
+                                            "decision"
+                                        ],
+                                    }
+                                    if self.speclink_cv_config.debug_dump
+                                    else {}
+                                ),
+                            },
+                        )
+                        speclink_cv_append_profile(
+                            self.speclink_cv_config,
+                            {
+                                "event": "verify_chunk_scheduled",
+                                "phase": "prefix",
+                                "request_id": request.request_id,
+                                "k": speclink_cv_prefix_plan["k"],
+                                "chunk_len": actual_h,
+                                "suffix_len": suffix_len,
+                                "staged_drafting": bool(
+                                    speclink_cv_prefix_plan.get(
+                                        "staged_drafting"
+                                    )
+                                ),
+                                "reason": speclink_cv_prefix_plan["reason"],
+                                "confidence_sizing": (
+                                    self.speclink_cv_config.confidence_sizing
+                                ),
+                                "confidence_source": (
+                                    speclink_cv_prefix_plan["decision"].get(
+                                        "confidence_source", ""
+                                    )
+                                ),
+                                "selected_benefit": (
+                                    speclink_cv_prefix_plan["decision"].get(
+                                        "selected_benefit"
+                                    )
+                                ),
+                                "scheduled_tokens_for_request": num_new_tokens,
+                                "shadow_token_budget_debit": (
+                                    speclink_cv_token_budget_debit
+                                ),
+                                "async_queue": self.speclink_cv_config.async_queue,
+                                "allow_batched_prefix": (
+                                    self.speclink_cv_config.allow_batched_prefix
+                                ),
+                                "recompute_committed_prefix": (
+                                    self.speclink_cv_config.recompute_committed_prefix
+                                ),
+                                "prefix_seq_budget": speclink_cv_prefix_seq_budget,
+                                "isolated_request_id": speclink_cv_isolated_req_id,
+                                "queue_wait_ms": speclink_cv_prefix_plan.get(
+                                    "queue_wait_ms", 0.0
+                                ),
+                                "async_dispatch_reason": (
+                                    speclink_cv_prefix_plan.get(
+                                        "async_dispatch_reason", ""
+                                    )
+                                ),
+                                "running_reqs": len(self.running),
+                                "max_num_running_reqs": self.max_num_running_reqs,
+                                "isolated_request_id": speclink_cv_isolated_req_id,
+                                "max_num_scheduled_tokens": (
+                                    self.max_num_scheduled_tokens
+                                ),
+                                "roofline": speclink_cv_prefix_plan[
+                                    "decision"
+                                ].get("roofline", {}),
+                            },
+                        )
+                    elif request.request_id in self.speclink_cv_suffix_phase_req_ids:
+                        replay_prefix_len = (
+                            self.speclink_cv_suffix_replay_prefix_lens.pop(
+                                request.request_id, 0
+                            )
+                        )
+                        dense_realign_steps = (
+                            self.speclink_cv_config.effective_dense_realign_steps(
+                                self.num_spec_tokens
+                            )
+                        )
+                        drop_next_draft = dense_realign_steps > 0
+                        self.speclink_cv_suffix_phase_req_ids.discard(
+                            request.request_id
+                        )
+                        if drop_next_draft:
+                            self.speclink_cv_drop_next_draft_req_ids.add(
+                                request.request_id
+                            )
+                        self.speclink_cv_scheduled_suffix_lens[
+                            request.request_id
+                        ] = len(spec_token_ids)
+                        speclink_cv_suffix_chunk_lens[request.request_id] = (
+                            len(spec_token_ids)
+                        )
+                        speclink_cv_append_event(
+                            self.speclink_cv_config,
+                            {
+                                "event": "suffix_scheduled",
+                                "request_id": request.request_id,
+                                "chunk_len": len(spec_token_ids),
+                                "drop_next_draft": drop_next_draft,
+                                "dense_realign_steps": dense_realign_steps,
+                                "suffix_replay_one_shot_shape": replay_prefix_len > 0,
+                                "replayed_prefix_len": replay_prefix_len,
+                                "effective_verify_tokens": (
+                                    len(spec_token_ids) + replay_prefix_len
+                                ),
+                                **(
+                                    {"suffix_tokens": list(spec_token_ids)}
+                                    if self.speclink_cv_config.debug_dump
+                                    else {}
+                                ),
+                            },
+                        )
+                        speclink_cv_append_profile(
+                            self.speclink_cv_config,
+                            {
+                                "event": "verify_chunk_scheduled",
+                                "phase": "suffix",
+                                "request_id": request.request_id,
+                                "chunk_len": len(spec_token_ids),
+                                "drop_next_draft": drop_next_draft,
+                                "dense_realign_steps": dense_realign_steps,
+                                "suffix_replay_one_shot_shape": replay_prefix_len > 0,
+                                "replayed_prefix_len": replay_prefix_len,
+                                "effective_verify_tokens": (
+                                    len(spec_token_ids) + replay_prefix_len
+                                ),
+                                "scheduled_tokens_for_request": num_new_tokens,
+                                "running_reqs": len(self.running),
+                                "max_num_running_reqs": self.max_num_running_reqs,
+                                "max_num_scheduled_tokens": (
+                                    self.max_num_scheduled_tokens
+                                ),
+                            },
+                        )
 
                 # New spec tokens will be set in `update_draft_token_ids` before the
                 # next step when applicable.
                 request.spec_token_ids = []
+                request.spec_token_confidences = []
 
             # Encoder-related.
             if encoder_inputs_to_schedule:
@@ -553,6 +1876,19 @@ class Scheduler(SchedulerInterface):
                     self.encoder_cache_manager.allocate(request, i)
                     if self.ec_connector is not None:
                         self.ec_connector.update_state_after_alloc(request, i)
+
+        if (
+            speclink_cv_isolated_req_id is not None
+            or speclink_cv_grouped_force_one_shot_req_ids
+            or (
+                self.speclink_cv_config.lockstep_iteration_barrier
+                and self.speclink_cv_lockstep_group_pending
+            )
+        ):
+            # Conservative exact mode keeps live prefix/suffix chunks out of
+            # mixed verification batches. This also prevents newly waiting
+            # requests from being admitted into the same target forward.
+            token_budget = 0
 
         # Record the LoRAs in scheduled_running_reqs
         scheduled_loras: set[int] = set()
@@ -861,6 +2197,38 @@ class Scheduler(SchedulerInterface):
         # Check if the scheduling constraints are satisfied.
         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
         assert total_num_scheduled_tokens <= self.max_num_scheduled_tokens
+        speclink_cv_append_profile(
+            self.speclink_cv_config,
+            {
+                "event": "schedule_step",
+                "elapsed_ms": (time.monotonic() - scheduled_timestamp) * 1000,
+                "running_reqs": len(self.running),
+                "scheduled_running_reqs": len(scheduled_running_reqs),
+                "scheduled_new_reqs": len(scheduled_new_reqs),
+                "scheduled_resumed_reqs": len(scheduled_resumed_reqs),
+                "total_num_scheduled_tokens": total_num_scheduled_tokens,
+                "scheduled_spec_reqs": len(scheduled_spec_decode_tokens),
+                "scheduled_spec_tokens": sum(
+                    len(tokens) for tokens in scheduled_spec_decode_tokens.values()
+                ),
+                "prefix_chunks": len(speclink_cv_prefix_chunk_lens),
+                "prefix_chunk_tokens": sum(speclink_cv_prefix_chunk_lens.values()),
+                "shadow_token_budget_extra": speclink_cv_shadow_token_budget_extra,
+                "token_budget_remaining": token_budget,
+                "max_num_scheduled_tokens": self.max_num_scheduled_tokens,
+                "max_num_running_reqs": self.max_num_running_reqs,
+                "async_queue": self.speclink_cv_config.async_queue,
+                "roofline_packing": self.speclink_cv_config.roofline_packing,
+                "confidence_sizing": self.speclink_cv_config.confidence_sizing,
+                "allow_batched_prefix": self.speclink_cv_config.allow_batched_prefix,
+                "prefix_seq_budget": speclink_cv_prefix_seq_budget,
+                "isolated_request_id": speclink_cv_isolated_req_id,
+            },
+        )
+        self._speclink_cv_start_lockstep_group(
+            speclink_cv_prefix_chunk_lens.keys(),
+            "prefix_batch_scheduled",
+        )
 
         assert token_budget >= 0
         assert len(self.running) <= self.max_num_running_reqs
@@ -936,6 +2304,12 @@ class Scheduler(SchedulerInterface):
             finished_req_ids=self.finished_req_ids,
             free_encoder_mm_hashes=self.encoder_cache_manager.get_freed_mm_hashes(),
             new_block_ids_to_zero=new_block_ids_to_zero,
+            speclink_cv_prefix_chunk_lens=speclink_cv_prefix_chunk_lens,
+            speclink_cv_suffix_chunk_lens=speclink_cv_suffix_chunk_lens,
+            speclink_cv_prefix_skipped_suffix_lens=(
+                speclink_cv_prefix_skipped_suffix_lens
+            ),
+            speclink_cv_skip_drafter_req_ids=speclink_cv_skip_drafter_req_ids,
         )
 
         # NOTE(Kuntai): this function is designed for multiple purposes:
@@ -962,7 +2336,11 @@ class Scheduler(SchedulerInterface):
     ) -> KVConnectorMetadata:
         return connector.build_connector_meta(scheduler_output)
 
-    def _preempt_request(self, request: Request, timestamp: float) -> None:
+    def _preempt_request(
+        self,
+        request: Request,
+        timestamp: float,
+    ) -> None:
         """Preempt a request and put it back to the waiting queue.
 
         NOTE: The request should be popped from the running queue outside of this
@@ -977,6 +2355,22 @@ class Scheduler(SchedulerInterface):
         request.num_computed_tokens = 0
         if request.spec_token_ids:
             request.spec_token_ids = []
+        request.spec_token_confidences = []
+        self.speclink_cv_scheduled_prefix.pop(request.request_id, None)
+        self.speclink_cv_suffix_phase_req_ids.discard(request.request_id)
+        self.speclink_cv_async_pending_prefix.pop(request.request_id, None)
+        self.speclink_cv_force_one_shot_req_ids.discard(request.request_id)
+        self.speclink_cv_force_one_shot_reasons.pop(request.request_id, None)
+        self.speclink_cv_drop_next_draft_req_ids.discard(request.request_id)
+        self.speclink_cv_scheduled_suffix_lens.pop(request.request_id, None)
+        self.speclink_cv_suffix_replay_prefix_lens.pop(request.request_id, None)
+        self.speclink_cv_staged_suffix_pending_lens.pop(
+            request.request_id, None
+        )
+        self.speclink_cv_dense_realign_remaining.pop(request.request_id, None)
+        self._speclink_cv_forget_lockstep_request(
+            request.request_id, "preempted"
+        )
         request.num_preemptions += 1
         if self.log_stats:
             request.record_event(EngineCoreEventType.PREEMPTED, timestamp)
@@ -1367,27 +2761,667 @@ class Scheduler(SchedulerInterface):
             scheduled_spec_token_ids = (
                 scheduler_output.scheduled_spec_decode_tokens.get(req_id)
             )
-            if scheduled_spec_token_ids and generated_token_ids:
+            speclink_cv_prefix_plan = self.speclink_cv_scheduled_prefix.pop(
+                req_id, None
+            )
+            speclink_cv_suffix_len = self.speclink_cv_scheduled_suffix_lens.pop(
+                req_id, None
+            )
+            speclink_cv_suffix_to_requeue: list[int] | None = None
+            speclink_cv_confirm_one_shot_tokens: list[int] | None = None
+            speclink_cv_discarded_bonus = 0
+            speclink_cv_replay_prefix_len = 0
+            speclink_cv_computed_correction_override: int | None = None
+            speclink_cv_skip_suffix_rollback_reason: str | None = None
+            speclink_cv_lockstep_resolve_reason: str | None = None
+            speclink_cv_skip_spec_stats = False
+            speclink_cv_prefix_reject_confirm = (
+                req_id in scheduler_output.speclink_cv_prefix_reject_confirm_req_ids
+            )
+            speclink_cv_prefix_low_margin_confirm = (
+                req_id
+                in scheduler_output.speclink_cv_prefix_low_margin_confirm_req_ids
+            )
+            speclink_cv_batch_wide_prefix_reject_confirm = (
+                req_id
+                in scheduler_output
+                .speclink_cv_batch_wide_prefix_reject_confirm_req_ids
+            )
+            speclink_cv_prefix_accept_confirm = (
+                req_id in scheduler_output.speclink_cv_prefix_accepted_req_ids
+                and (
+                    self.speclink_cv_config.confirm_prefix_accept_one_shot
+                    or speclink_cv_batch_wide_prefix_reject_confirm
+                )
+            )
+            speclink_cv_confirm_one_shot_reason = ""
+            if scheduled_spec_token_ids and (
+                generated_token_ids
+                or speclink_cv_prefix_low_margin_confirm
+                or speclink_cv_prefix_reject_confirm
+                or speclink_cv_prefix_accept_confirm
+                or speclink_cv_batch_wide_prefix_reject_confirm
+            ):
                 num_draft_tokens = len(scheduled_spec_token_ids)
-                num_accepted = len(generated_token_ids) - 1
+                if speclink_cv_prefix_low_margin_confirm:
+                    if req_id in scheduler_output.speclink_cv_prefix_accepted_req_ids:
+                        num_accepted = len(scheduled_spec_token_ids)
+                    else:
+                        confirm_accepts = (
+                            scheduler_output
+                            .speclink_cv_prefix_reject_confirm_num_accepted
+                        )
+                        num_accepted = confirm_accepts.get(req_id, 0)
+                elif speclink_cv_prefix_reject_confirm:
+                    confirm_accepts = (
+                        scheduler_output.speclink_cv_prefix_reject_confirm_num_accepted
+                    )
+                    num_accepted = confirm_accepts.get(req_id, 0)
+                elif speclink_cv_prefix_accept_confirm:
+                    num_accepted = len(scheduled_spec_token_ids)
+                else:
+                    num_accepted = len(generated_token_ids) - 1
+                if speclink_cv_prefix_plan is not None:
+                    selected_h = int(speclink_cv_prefix_plan["selected_h"])
+                    suffix = list(speclink_cv_prefix_plan["suffix"])
+                    suffix_len = int(
+                        speclink_cv_prefix_plan.get("suffix_len", len(suffix))
+                    )
+                    staged_prefix = bool(
+                        speclink_cv_prefix_plan.get("staged_drafting")
+                    )
+                    prefix_all_accepted = (
+                        req_id in scheduler_output.speclink_cv_prefix_accepted_req_ids
+                    )
+                    low_margin_unclassified_confirm = (
+                        speclink_cv_prefix_low_margin_confirm
+                        and not prefix_all_accepted
+                        and not speclink_cv_prefix_reject_confirm
+                    )
+                    if low_margin_unclassified_confirm and suffix:
+                        full_draft_tokens = list(scheduled_spec_token_ids)
+                        full_draft_tokens.extend(suffix)
+                        speclink_cv_confirm_one_shot_tokens = full_draft_tokens
+                        speclink_cv_confirm_one_shot_reason = (
+                            "prefix_low_margin_confirmation"
+                        )
+                        speclink_cv_computed_correction_override = (
+                            num_tokens_scheduled
+                        )
+                        speclink_cv_skip_spec_stats = True
+                        generated_token_ids = []
+                        min_margin = (
+                            scheduler_output.speclink_cv_prefix_low_margin_values.get(
+                                req_id
+                            )
+                        )
+                        speclink_cv_append_event(
+                            self.speclink_cv_config,
+                            {
+                                "event": "prefix_low_margin_confirm_one_shot",
+                                "request_id": req_id,
+                                "k": speclink_cv_prefix_plan["k"],
+                                "selected_h": selected_h,
+                                "suffix_len": suffix_len,
+                                "confirm_tokens": len(full_draft_tokens),
+                                "min_margin": min_margin,
+                                "threshold": (
+                                    self.speclink_cv_config
+                                    .prefix_low_margin_fallback_threshold
+                                ),
+                                "discard_prefix_output": True,
+                                **(
+                                    {
+                                        "scheduled_prefix_tokens": list(
+                                            scheduled_spec_token_ids
+                                        ),
+                                        "suffix_tokens": list(suffix),
+                                    }
+                                    if self.speclink_cv_config.debug_dump
+                                    else {}
+                                ),
+                            },
+                        )
+                        speclink_cv_append_profile(
+                            self.speclink_cv_config,
+                            {
+                                "event": "verify_chunk_result",
+                                "phase": "prefix",
+                                "result": "low_margin_confirm_one_shot",
+                                "request_id": req_id,
+                                "k": speclink_cv_prefix_plan["k"],
+                                "chunk_len": selected_h,
+                                "suffix_len": suffix_len,
+                                "num_accepted": 0,
+                                "skipped_suffix_tokens": 0,
+                                "extra_tlm_forward": 1,
+                                "discard_prefix_output": True,
+                                "min_margin": min_margin,
+                                "threshold": (
+                                    self.speclink_cv_config
+                                    .prefix_low_margin_fallback_threshold
+                                ),
+                            },
+                        )
+                    elif prefix_all_accepted and (suffix or suffix_len > 0):
+                        if (
+                            self.speclink_cv_config.confirm_prefix_accept_one_shot
+                            or speclink_cv_prefix_low_margin_confirm
+                            or speclink_cv_batch_wide_prefix_reject_confirm
+                            or self.speclink_cv_config.prefix_no_kv_write
+                        ):
+                            if staged_prefix and not suffix:
+                                generated_token_ids = []
+                                speclink_cv_append_event(
+                                    self.speclink_cv_config,
+                                    {
+                                        "event": "prefix_accepted_confirm_missing_suffix",
+                                        "request_id": req_id,
+                                        "k": speclink_cv_prefix_plan["k"],
+                                        "selected_h": selected_h,
+                                        "suffix_len": suffix_len,
+                                        "reason": "staged_suffix_not_drafted_yet",
+                                    },
+                                )
+                                continue
+                            full_draft_tokens = list(scheduled_spec_token_ids)
+                            full_draft_tokens.extend(suffix)
+                            speclink_cv_confirm_one_shot_tokens = full_draft_tokens
+                            if speclink_cv_batch_wide_prefix_reject_confirm:
+                                speclink_cv_confirm_one_shot_reason = (
+                                    "batch_wide_prefix_reject_confirmation"
+                                )
+                            elif self.speclink_cv_config.prefix_no_kv_write:
+                                speclink_cv_confirm_one_shot_reason = (
+                                    "prefix_no_kv_write_accept_confirmation"
+                                )
+                            else:
+                                speclink_cv_confirm_one_shot_reason = (
+                                    "prefix_accept_confirmation"
+                                )
+                            speclink_cv_computed_correction_override = (
+                                num_tokens_scheduled
+                            )
+                            speclink_cv_skip_spec_stats = True
+                            generated_token_ids = []
+                            speclink_cv_append_event(
+                                self.speclink_cv_config,
+                                {
+                                    "event": "prefix_accepted_confirm_one_shot",
+                                    "request_id": req_id,
+                                    "k": speclink_cv_prefix_plan["k"],
+                                    "selected_h": selected_h,
+                                    "suffix_len": suffix_len,
+                                    "confirm_tokens": len(full_draft_tokens),
+                                    "discard_prefix_output": True,
+                                    **(
+                                        {
+                                            "scheduled_prefix_tokens": list(
+                                                scheduled_spec_token_ids
+                                            ),
+                                            "suffix_tokens": list(suffix),
+                                        }
+                                        if self.speclink_cv_config.debug_dump
+                                        else {}
+                                    ),
+                                },
+                            )
+                            speclink_cv_append_profile(
+                                self.speclink_cv_config,
+                                {
+                                    "event": "verify_chunk_result",
+                                    "phase": "prefix",
+                                    "result": "accepted_confirm_one_shot",
+                                    "request_id": req_id,
+                                    "k": speclink_cv_prefix_plan["k"],
+                                    "chunk_len": selected_h,
+                                    "suffix_len": suffix_len,
+                                    "num_accepted": selected_h,
+                                    "skipped_suffix_tokens": 0,
+                                    "extra_tlm_forward": 1,
+                                    "discard_prefix_output": True,
+                                },
+                            )
+                        else:
+                            # Prefix fully accepted. The model runner has
+                            # already masked the normal speculative bonus token
+                            # so its internal cached tokens match the scheduler
+                            # state. If this object came from an older/non-masked
+                            # path, still trim the bonus defensively.
+                            if len(generated_token_ids) == selected_h + 1:
+                                generated_token_ids = generated_token_ids[:-1]
+                            num_accepted = selected_h
+                            # The target forward still scheduled the normal
+                            # bonus token to obtain the bonus logits. SpecLink-CV
+                            # masks it out so suffix verification can run before
+                            # any bonus is committed, which means scheduler
+                            # progress must roll back by one token even though
+                            # no draft token was rejected.
+                            speclink_cv_discarded_bonus = 1
+                            if self.speclink_cv_config.suffix_replay_one_shot_shape:
+                                if not staged_prefix:
+                                    speclink_cv_replay_prefix_len = selected_h
+                                    self.speclink_cv_suffix_replay_prefix_lens[
+                                        req_id
+                                    ] = selected_h
+                            if staged_prefix:
+                                self.speclink_cv_staged_suffix_pending_lens[
+                                    req_id
+                                ] = suffix_len
+                            else:
+                                speclink_cv_suffix_to_requeue = suffix
+                            speclink_cv_append_event(
+                                self.speclink_cv_config,
+                                {
+                                    "event": (
+                                        "prefix_accepted_stage_suffix_pending"
+                                        if staged_prefix
+                                        else "prefix_accepted_requeue_suffix"
+                                    ),
+                                    "request_id": req_id,
+                                    "k": speclink_cv_prefix_plan["k"],
+                                    "selected_h": selected_h,
+                                    "suffix_len": suffix_len,
+                                    "num_accepted": num_accepted,
+                                    "staged_drafting": staged_prefix,
+                                    "discarded_bonus": speclink_cv_discarded_bonus,
+                                    "suffix_replay_one_shot_shape": (
+                                        speclink_cv_replay_prefix_len > 0
+                                    ),
+                                    "replayed_prefix_len": (
+                                        speclink_cv_replay_prefix_len
+                                    ),
+                                    **(
+                                        {
+                                            "generated_token_ids": list(
+                                                generated_token_ids
+                                            ),
+                                            "suffix_tokens": list(suffix),
+                                        }
+                                        if self.speclink_cv_config.debug_dump
+                                        else {}
+                                    ),
+                                },
+                            )
+                            speclink_cv_append_profile(
+                                self.speclink_cv_config,
+                                {
+                                    "event": "verify_chunk_result",
+                                    "phase": "prefix",
+                                    "result": (
+                                        "accepted_stage_suffix_pending"
+                                        if staged_prefix
+                                        else "accepted_requeue_suffix"
+                                    ),
+                                    "request_id": req_id,
+                                    "k": speclink_cv_prefix_plan["k"],
+                                    "chunk_len": selected_h,
+                                    "suffix_len": suffix_len,
+                                    "num_accepted": num_accepted,
+                                    "skipped_suffix_tokens": 0,
+                                    "extra_tlm_forward": 1,
+                                    "staged_drafting": staged_prefix,
+                                    "extra_replay_tokens": (
+                                        speclink_cv_replay_prefix_len
+                                    ),
+                                    "suffix_replay_one_shot_shape": (
+                                        speclink_cv_replay_prefix_len > 0
+                                    ),
+                                    "replayed_prefix_len": (
+                                        speclink_cv_replay_prefix_len
+                                    ),
+                                    "discarded_bonus": speclink_cv_discarded_bonus,
+                                },
+                            )
+                    elif suffix or suffix_len > 0:
+                        if (
+                            suffix
+                            and (
+                                self.speclink_cv_config.confirm_prefix_reject_one_shot
+                                or speclink_cv_prefix_low_margin_confirm
+                                or speclink_cv_batch_wide_prefix_reject_confirm
+                            )
+                        ):
+                            full_draft_tokens = list(scheduled_spec_token_ids)
+                            full_draft_tokens.extend(suffix)
+                            speclink_cv_confirm_one_shot_tokens = full_draft_tokens
+                            speclink_cv_confirm_one_shot_reason = (
+                                "batch_wide_prefix_reject_confirmation"
+                                if speclink_cv_batch_wide_prefix_reject_confirm
+                                else "prefix_reject_confirmation"
+                            )
+                            speclink_cv_computed_correction_override = (
+                                num_tokens_scheduled
+                            )
+                            speclink_cv_skip_spec_stats = True
+                            speclink_cv_append_event(
+                                self.speclink_cv_config,
+                                {
+                                    "event": "prefix_rejected_confirm_one_shot",
+                                    "request_id": req_id,
+                                    "k": speclink_cv_prefix_plan["k"],
+                                    "selected_h": selected_h,
+                                    "suffix_len": suffix_len,
+                                    "num_accepted": num_accepted,
+                                    "confirm_tokens": len(full_draft_tokens),
+                                    "discard_prefix_output": True,
+                                    **(
+                                        {
+                                            "generated_token_ids": list(
+                                                generated_token_ids
+                                            ),
+                                            "scheduled_prefix_tokens": list(
+                                                scheduled_spec_token_ids
+                                            ),
+                                            "suffix_tokens": list(suffix),
+                                        }
+                                        if self.speclink_cv_config.debug_dump
+                                        else {}
+                                    ),
+                                },
+                            )
+                            speclink_cv_append_profile(
+                                self.speclink_cv_config,
+                                {
+                                    "event": "verify_chunk_result",
+                                    "phase": "prefix",
+                                    "result": "rejected_confirm_one_shot",
+                                    "request_id": req_id,
+                                    "k": speclink_cv_prefix_plan["k"],
+                                    "chunk_len": selected_h,
+                                    "suffix_len": suffix_len,
+                                    "num_accepted": num_accepted,
+                                    "skipped_suffix_tokens": 0,
+                                    "extra_tlm_forward": 1,
+                                    "discard_prefix_output": True,
+                                },
+                            )
+                            generated_token_ids = []
+                        else:
+                            recompute_committed_prefix = (
+                                self.speclink_cv_config.recompute_committed_prefix
+                                or self.speclink_cv_config.prefix_no_kv_write
+                            )
+                            if recompute_committed_prefix:
+                                speclink_cv_computed_correction_override = (
+                                    num_tokens_scheduled
+                                )
+                            prefix_reject_dense_steps = (
+                                self.speclink_cv_config.effective_prefix_reject_dense_realign_steps(
+                                    self.num_spec_tokens
+                                )
+                            )
+                            if prefix_reject_dense_steps > 0:
+                                self.speclink_cv_dense_realign_remaining[
+                                    req_id
+                                ] = max(
+                                    prefix_reject_dense_steps,
+                                    self.speclink_cv_dense_realign_remaining.get(
+                                        req_id, 0
+                                    ),
+                                )
+                                speclink_cv_append_event(
+                                    self.speclink_cv_config,
+                                    {
+                                        "event": (
+                                            "prefix_rejected_dense_realign"
+                                        ),
+                                        "request_id": req_id,
+                                        "k": speclink_cv_prefix_plan["k"],
+                                        "selected_h": selected_h,
+                                        "suffix_len": suffix_len,
+                                        "num_accepted": num_accepted,
+                                        "dense_realign_steps": (
+                                            prefix_reject_dense_steps
+                                        ),
+                                    },
+                                )
+                            speclink_cv_append_event(
+                                self.speclink_cv_config,
+                                {
+                                    "event": "prefix_rejected_skip_suffix",
+                                    "request_id": req_id,
+                                    "k": speclink_cv_prefix_plan["k"],
+                                    "selected_h": selected_h,
+                                    "suffix_len": suffix_len,
+                                    "num_accepted": num_accepted,
+                                    "skipped_suffix_tokens": suffix_len,
+                                    "staged_drafting": staged_prefix,
+                                    "recompute_committed_prefix": (
+                                        recompute_committed_prefix
+                                    ),
+                                    "computed_token_correction_override": (
+                                        speclink_cv_computed_correction_override
+                                    ),
+                                    "dense_realign_steps": (
+                                        prefix_reject_dense_steps
+                                    ),
+                                    **(
+                                        {
+                                            "generated_token_ids": list(
+                                                generated_token_ids
+                                            ),
+                                            "scheduled_prefix_tokens": list(
+                                                scheduled_spec_token_ids
+                                            ),
+                                            "suffix_tokens": list(suffix),
+                                        }
+                                        if self.speclink_cv_config.debug_dump
+                                        else {}
+                                    ),
+                                },
+                            )
+                            speclink_cv_append_profile(
+                                self.speclink_cv_config,
+                                {
+                                    "event": "verify_chunk_result",
+                                    "phase": "prefix",
+                                    "result": "rejected_skip_suffix",
+                                    "request_id": req_id,
+                                    "k": speclink_cv_prefix_plan["k"],
+                                    "chunk_len": selected_h,
+                                    "suffix_len": suffix_len,
+                                    "num_accepted": num_accepted,
+                                    "skipped_suffix_tokens": suffix_len,
+                                    "staged_drafting": staged_prefix,
+                                    "recompute_committed_prefix": (
+                                        recompute_committed_prefix
+                                    ),
+                                    "computed_token_correction_override": (
+                                        speclink_cv_computed_correction_override
+                                    ),
+                                    "extra_tlm_forward": (
+                                        prefix_reject_dense_steps
+                                    ),
+                                    "discarded_bonus": 0,
+                                    "dense_realign_steps": (
+                                        prefix_reject_dense_steps
+                                    ),
+                                },
+                            )
+                            speclink_cv_skip_suffix_rollback_reason = (
+                                "prefix_rejected_skip_suffix"
+                            )
+                            speclink_cv_lockstep_resolve_reason = (
+                                "prefix_rejected_skip_suffix"
+                            )
+                elif self.speclink_cv_config.debug_dump:
+                    speclink_cv_append_event(
+                        self.speclink_cv_config,
+                        {
+                            "event": "spec_step_output",
+                            "request_id": req_id,
+                            "scheduled_spec_token_ids": list(
+                                scheduled_spec_token_ids
+                            ),
+                            "generated_token_ids": list(generated_token_ids),
+                            "num_accepted": num_accepted,
+                        },
+                    )
+                if (
+                    speclink_cv_suffix_len is not None
+                    and num_accepted < speclink_cv_suffix_len
+                ):
+                    dense_steps = (
+                        self.speclink_cv_config.effective_dense_realign_steps(
+                            self.num_spec_tokens
+                        )
+                    )
+                    if dense_steps > 0:
+                        self.speclink_cv_dense_realign_remaining[req_id] = max(
+                            dense_steps,
+                            self.speclink_cv_dense_realign_remaining.get(req_id, 0),
+                        )
+                        speclink_cv_append_event(
+                            self.speclink_cv_config,
+                            {
+                                "event": "suffix_rejected_dense_realign",
+                                "request_id": req_id,
+                                "suffix_len": speclink_cv_suffix_len,
+                                "num_accepted": num_accepted,
+                                "dense_realign_steps": dense_steps,
+                            },
+                        )
+                        speclink_cv_append_profile(
+                            self.speclink_cv_config,
+                            {
+                                "event": "verify_chunk_result",
+                                "phase": "suffix",
+                                "result": "rejected_dense_realign",
+                                "request_id": req_id,
+                                "chunk_len": speclink_cv_suffix_len,
+                                "num_accepted": num_accepted,
+                                "dense_realign_steps": dense_steps,
+                                "extra_tlm_forward": dense_steps,
+                            },
+                        )
+                    else:
+                        speclink_cv_append_event(
+                            self.speclink_cv_config,
+                            {
+                                "event": "suffix_rejected_dense_realign_disabled",
+                                "request_id": req_id,
+                                "suffix_len": speclink_cv_suffix_len,
+                                "num_accepted": num_accepted,
+                                "dense_realign_steps": 0,
+                            },
+                        )
+                        speclink_cv_append_profile(
+                            self.speclink_cv_config,
+                            {
+                                "event": "verify_chunk_result",
+                                "phase": "suffix",
+                                "result": "rejected_dense_realign_disabled",
+                                "request_id": req_id,
+                                "chunk_len": speclink_cv_suffix_len,
+                                "num_accepted": num_accepted,
+                                "dense_realign_steps": 0,
+                                "extra_tlm_forward": 0,
+                            },
+                    )
+                if speclink_cv_suffix_len is not None:
+                    speclink_cv_lockstep_resolve_reason = "suffix_verified"
+                elif (
+                    speclink_cv_prefix_plan is None
+                    and self._speclink_cv_lockstep_is_pending(req_id)
+                ):
+                    speclink_cv_lockstep_resolve_reason = (
+                        "one_shot_confirmation_verified"
+                    )
                 num_rejected = num_draft_tokens - num_accepted
+                computed_token_correction = (
+                    speclink_cv_computed_correction_override
+                    if speclink_cv_computed_correction_override is not None
+                    else (
+                        num_rejected
+                        + speclink_cv_discarded_bonus
+                        + speclink_cv_replay_prefix_len
+                    )
+                )
                 # num_computed_tokens represents the number of tokens
                 # processed in the current step, considering scheduled
                 # tokens and rejections. If some tokens are rejected,
                 # num_computed_tokens is decreased by the number of rejected
                 # tokens.
                 if request.num_computed_tokens > 0:
-                    request.num_computed_tokens -= num_rejected
+                    request.num_computed_tokens -= computed_token_correction
                 # If async scheduling, num_output_placeholders also includes
                 # the scheduled spec tokens count and so is similarly adjusted.
                 if request.num_output_placeholders > 0:
-                    request.num_output_placeholders -= num_rejected
-                spec_decoding_stats = self.make_spec_decoding_stats(
-                    spec_decoding_stats,
-                    num_draft_tokens=num_draft_tokens,
-                    num_accepted_tokens=num_accepted,
-                    num_invalid_spec_tokens=scheduler_output.num_invalid_spec_tokens,
-                    request_id=req_id,
+                    request.num_output_placeholders -= computed_token_correction
+                speclink_cv_block_rollback_reason = (
+                    speclink_cv_skip_suffix_rollback_reason
+                )
+                if (
+                    speclink_cv_block_rollback_reason is None
+                    and self.speclink_cv_config.prefix_probe_block_rollback
+                    and computed_token_correction > 0
+                    and (
+                        speclink_cv_discarded_bonus > 0
+                        or speclink_cv_replay_prefix_len > 0
+                        or speclink_cv_computed_correction_override is not None
+                    )
+                ):
+                    speclink_cv_block_rollback_reason = (
+                        "computed_token_correction"
+                    )
+                if (
+                    speclink_cv_block_rollback_reason is not None
+                    and self.speclink_cv_config.prefix_probe_block_rollback
+                ):
+                    released_block_ids = self.kv_cache_manager.truncate_blocks(
+                        req_id, request.num_computed_tokens
+                    )
+                    speclink_cv_append_event(
+                        self.speclink_cv_config,
+                        {
+                            "event": "prefix_skip_suffix_block_rollback",
+                            "request_id": req_id,
+                            "num_computed_tokens": request.num_computed_tokens,
+                            "released_block_ids": [
+                                list(group_ids)
+                                for group_ids in released_block_ids
+                            ],
+                            "reason": speclink_cv_block_rollback_reason,
+                            "computed_token_correction": computed_token_correction,
+                            "discarded_bonus": speclink_cv_discarded_bonus,
+                            "replayed_prefix_len": speclink_cv_replay_prefix_len,
+                        },
+                    )
+                    speclink_cv_append_profile(
+                        self.speclink_cv_config,
+                        {
+                            "event": "prefix_skip_suffix_block_rollback",
+                            "request_id": req_id,
+                            "num_computed_tokens": request.num_computed_tokens,
+                            "released_block_counts": [
+                                len(group_ids)
+                                for group_ids in released_block_ids
+                            ],
+                            "reason": speclink_cv_block_rollback_reason,
+                            "computed_token_correction": computed_token_correction,
+                            "discarded_bonus": speclink_cv_discarded_bonus,
+                            "replayed_prefix_len": speclink_cv_replay_prefix_len,
+                        },
+                    )
+                if not speclink_cv_skip_spec_stats:
+                    spec_decoding_stats = self.make_spec_decoding_stats(
+                        spec_decoding_stats,
+                        num_draft_tokens=num_draft_tokens,
+                        num_accepted_tokens=num_accepted,
+                        num_invalid_spec_tokens=(
+                            scheduler_output.num_invalid_spec_tokens
+                        ),
+                        request_id=req_id,
+                    )
+            elif self.speclink_cv_config.debug_dump and generated_token_ids:
+                speclink_cv_append_event(
+                    self.speclink_cv_config,
+                    {
+                        "event": "dense_step_output",
+                        "request_id": req_id,
+                        "generated_token_ids": list(generated_token_ids),
+                    },
                 )
 
             # Free encoder inputs only after the step has actually executed.
@@ -1406,6 +3440,144 @@ class Scheduler(SchedulerInterface):
                 new_token_ids, stopped = self._update_request_with_output(
                     request, new_token_ids
                 )
+                if speclink_cv_suffix_to_requeue is not None:
+                    if not stopped and not request.is_finished():
+                        request.spec_token_ids = speclink_cv_suffix_to_requeue
+                        request.spec_token_confidences = []
+                        self.speclink_cv_suffix_phase_req_ids.add(req_id)
+                    else:
+                        speclink_cv_append_event(
+                            self.speclink_cv_config,
+                            {
+                                "event": "suffix_not_requeued_finished",
+                                "request_id": req_id,
+                                "suffix_len": len(speclink_cv_suffix_to_requeue),
+                            },
+                        )
+                        speclink_cv_append_profile(
+                            self.speclink_cv_config,
+                            {
+                                "event": "verify_chunk_result",
+                                "phase": "suffix",
+                                "result": "not_requeued_finished",
+                                "request_id": req_id,
+                                "chunk_len": len(speclink_cv_suffix_to_requeue),
+                            },
+                        )
+                if (
+                    speclink_cv_lockstep_resolve_reason is not None
+                    and speclink_cv_suffix_to_requeue is None
+                ):
+                    self._speclink_cv_mark_lockstep_resolved(
+                        req_id, speclink_cv_lockstep_resolve_reason
+                    )
+            elif speclink_cv_confirm_one_shot_tokens is not None:
+                if not request.is_finished():
+                    if self.speclink_cv_config.prefix_probe_block_rollback:
+                        released_block_ids = self.kv_cache_manager.truncate_blocks(
+                            req_id, request.num_computed_tokens
+                        )
+                        speclink_cv_append_event(
+                            self.speclink_cv_config,
+                            {
+                                "event": "prefix_probe_block_rollback",
+                                "request_id": req_id,
+                                "num_computed_tokens": (
+                                    request.num_computed_tokens
+                                ),
+                                "released_block_ids": [
+                                    list(group_ids)
+                                    for group_ids in released_block_ids
+                                ],
+                                "reason": (
+                                    speclink_cv_confirm_one_shot_reason
+                                    or "prefix_confirmation"
+                                ),
+                            },
+                        )
+                        speclink_cv_append_profile(
+                            self.speclink_cv_config,
+                            {
+                                "event": "prefix_probe_block_rollback",
+                                "request_id": req_id,
+                                "num_computed_tokens": (
+                                    request.num_computed_tokens
+                                ),
+                                "released_block_counts": [
+                                    len(group_ids)
+                                    for group_ids in released_block_ids
+                                ],
+                                "reason": (
+                                    speclink_cv_confirm_one_shot_reason
+                                    or "prefix_confirmation"
+                                ),
+                            },
+                        )
+                    request.spec_token_ids = speclink_cv_confirm_one_shot_tokens
+                    request.spec_token_confidences = []
+                    self.speclink_cv_force_one_shot_req_ids.add(req_id)
+                    self.speclink_cv_force_one_shot_reasons[
+                        req_id
+                    ] = speclink_cv_confirm_one_shot_reason or "prefix_confirmation"
+                    self.speclink_cv_async_pending_prefix.pop(req_id, None)
+                    if (
+                        speclink_cv_confirm_one_shot_reason
+                        == "prefix_accept_confirmation"
+                        or speclink_cv_confirm_one_shot_reason
+                        == "prefix_no_kv_write_accept_confirmation"
+                    ):
+                        if (
+                            speclink_cv_confirm_one_shot_reason
+                            == "prefix_no_kv_write_accept_confirmation"
+                        ):
+                            requeue_event = (
+                                "prefix_no_kv_write_accept_one_shot_requeued"
+                            )
+                            requeue_result = (
+                                "requeued_after_prefix_no_kv_write_accept"
+                            )
+                        else:
+                            requeue_event = "prefix_accept_one_shot_requeued"
+                            requeue_result = "requeued_after_prefix_accept"
+                    elif (
+                        speclink_cv_confirm_one_shot_reason
+                        == "prefix_low_margin_confirmation"
+                    ):
+                        requeue_event = "prefix_low_margin_one_shot_requeued"
+                        requeue_result = "requeued_after_prefix_low_margin"
+                    elif (
+                        speclink_cv_confirm_one_shot_reason
+                        == "batch_wide_prefix_reject_confirmation"
+                    ):
+                        requeue_event = (
+                            "batch_wide_prefix_reject_one_shot_requeued"
+                        )
+                        requeue_result = (
+                            "requeued_after_batch_wide_prefix_reject"
+                        )
+                    else:
+                        requeue_event = "prefix_reject_one_shot_requeued"
+                        requeue_result = "requeued_after_prefix_reject"
+                    speclink_cv_append_event(
+                        self.speclink_cv_config,
+                        {
+                            "event": requeue_event,
+                            "request_id": req_id,
+                            "k": len(speclink_cv_confirm_one_shot_tokens),
+                            "reason": speclink_cv_confirm_one_shot_reason,
+                        },
+                    )
+                    speclink_cv_append_profile(
+                        self.speclink_cv_config,
+                        {
+                            "event": "verify_chunk_result",
+                            "phase": "one_shot",
+                            "result": requeue_result,
+                            "request_id": req_id,
+                            "chunk_len": len(speclink_cv_confirm_one_shot_tokens),
+                            "reason": speclink_cv_confirm_one_shot_reason,
+                        },
+                    )
             elif request.pooling_params and pooler_output is not None:
                 # Pooling stops as soon as there is output.
                 request.status = RequestStatus.FINISHED_STOPPED
@@ -1675,26 +3847,201 @@ class Scheduler(SchedulerInterface):
                 self.encoder_cache_manager.free_encoder_input(request, input_id)
 
     def update_draft_token_ids(self, draft_token_ids: DraftTokenIds) -> None:
-        for req_id, spec_token_ids in zip(
-            draft_token_ids.req_ids,
-            draft_token_ids.draft_token_ids,
+        for req_index, (req_id, spec_token_ids) in enumerate(
+            zip(
+                draft_token_ids.req_ids,
+                draft_token_ids.draft_token_ids,
+            )
         ):
             request = self.requests.get(req_id)
             if request is None or request.is_finished():
                 # The request may have been finished. Skip.
                 continue
 
+            if (
+                req_id in self.speclink_cv_force_one_shot_req_ids
+                and request.spec_token_ids
+            ):
+                # A prefix verifier step was discarded and the original draft
+                # tokens are pending full-K confirmation. Keep them if the
+                # worker returns an intentionally empty drafter result for this
+                # confirmation step.
+                speclink_cv_append_event(
+                    self.speclink_cv_config,
+                    {
+                        "event": "draft_ignored_pending_one_shot_confirm",
+                        "request_id": req_id,
+                        "pending_draft_len": len(request.spec_token_ids),
+                        "new_draft_len": len(spec_token_ids),
+                    },
+                )
+                continue
+
             if request.is_prefill_chunk:
                 # Ignore draft tokens for prefill chunks.
                 if request.spec_token_ids:
                     request.spec_token_ids = []
+                request.spec_token_confidences = []
+                self.speclink_cv_async_pending_prefix.pop(req_id, None)
                 continue
 
-            # Add newly generated spec token ids to the request.
             if self.structured_output_manager.should_advance(request):
                 metadata = request.structured_output_request
                 spec_token_ids = metadata.grammar.validate_tokens(spec_token_ids)  # type: ignore[union-attr]
+            spec_token_confidences: list[float] = []
+            if draft_token_ids.draft_token_probs is not None:
+                if req_index < len(draft_token_ids.draft_token_probs):
+                    probs = draft_token_ids.draft_token_probs[req_index]
+                    spec_token_confidences = [
+                        float(value) for value in probs[: len(spec_token_ids)]
+                    ]
+
+            staged_suffix_len = self.speclink_cv_staged_suffix_pending_lens.pop(
+                req_id, None
+            )
+            if staged_suffix_len is not None:
+                suffix_tokens = list(spec_token_ids[:staged_suffix_len])
+                request.spec_token_ids = suffix_tokens
+                request.spec_token_confidences = spec_token_confidences[
+                    : len(suffix_tokens)
+                ]
+                self.speclink_cv_async_pending_prefix.pop(req_id, None)
+                if suffix_tokens:
+                    self.speclink_cv_suffix_phase_req_ids.add(req_id)
+                speclink_cv_append_event(
+                    self.speclink_cv_config,
+                    {
+                        "event": "staged_suffix_draft_registered",
+                        "request_id": req_id,
+                        "expected_suffix_len": staged_suffix_len,
+                        "new_draft_len": len(spec_token_ids),
+                        "registered_suffix_len": len(suffix_tokens),
+                    },
+                )
+                speclink_cv_append_profile(
+                    self.speclink_cv_config,
+                    {
+                        "event": "staged_suffix_draft_registered",
+                        "request_id": req_id,
+                        "expected_suffix_len": staged_suffix_len,
+                        "new_draft_len": len(spec_token_ids),
+                        "registered_suffix_len": len(suffix_tokens),
+                    },
+                )
+                continue
+
+            if req_id in self.speclink_cv_suffix_phase_req_ids:
+                # A prefix chunk was fully accepted and the original suffix is
+                # waiting for exact verification. The drafter already proposed
+                # new tokens after the prefix step, but those must not overwrite
+                # the pending suffix.
+                speclink_cv_append_event(
+                    self.speclink_cv_config,
+                    {
+                        "event": "draft_ignored_pending_suffix",
+                        "request_id": req_id,
+                        "pending_suffix_len": len(request.spec_token_ids),
+                        "new_draft_len": len(spec_token_ids),
+                    },
+                )
+                continue
+
+            if req_id in self.speclink_cv_drop_next_draft_req_ids:
+                # The just-finished suffix verifier forward used suffix draft
+                # tokens as inputs. If any suffix token was rejected, EAGLE's
+                # same-step hidden state can be conditioned on rejected suffix
+                # tokens and diverge from one-shot EAGLE3 under greedy decode.
+                # Drop this drafter output and let the next scheduler step run
+                # one dense TLM token before normal drafting resumes.
+                self.speclink_cv_drop_next_draft_req_ids.discard(req_id)
+                request.spec_token_ids = []
+                request.spec_token_confidences = []
+                self.speclink_cv_async_pending_prefix.pop(req_id, None)
+                speclink_cv_append_event(
+                    self.speclink_cv_config,
+                    {
+                        "event": "draft_ignored_after_suffix_verify",
+                        "request_id": req_id,
+                        "new_draft_len": len(spec_token_ids),
+                    },
+                )
+                speclink_cv_append_profile(
+                    self.speclink_cv_config,
+                    {
+                        "event": "verify_chunk_result",
+                        "phase": "suffix",
+                        "result": "draft_dropped_for_dense_realign",
+                        "request_id": req_id,
+                        "new_draft_len": len(spec_token_ids),
+                    },
+                )
+                continue
+
+            dense_realign_remaining = (
+                self.speclink_cv_dense_realign_remaining.get(req_id, 0)
+            )
+            if dense_realign_remaining > 0:
+                next_remaining = dense_realign_remaining - 1
+                if next_remaining:
+                    self.speclink_cv_dense_realign_remaining[req_id] = (
+                        next_remaining
+                    )
+                else:
+                    self.speclink_cv_dense_realign_remaining.pop(req_id, None)
+                request.spec_token_ids = []
+                request.spec_token_confidences = []
+                self.speclink_cv_async_pending_prefix.pop(req_id, None)
+                speclink_cv_append_event(
+                    self.speclink_cv_config,
+                    {
+                        "event": "draft_ignored_dense_realign",
+                        "request_id": req_id,
+                        "new_draft_len": len(spec_token_ids),
+                        "dense_realign_remaining": next_remaining,
+                    },
+                )
+                speclink_cv_append_profile(
+                    self.speclink_cv_config,
+                    {
+                        "event": "verify_chunk_result",
+                        "phase": "dense_realign",
+                        "result": "draft_dropped_for_dense_realign",
+                        "request_id": req_id,
+                        "new_draft_len": len(spec_token_ids),
+                        "dense_realign_remaining": next_remaining,
+                        "extra_tlm_forward": 1,
+                    },
+                )
+                continue
+
+            # Add newly generated spec token ids to the request.
+            self.speclink_cv_async_pending_prefix.pop(req_id, None)
+            if self._speclink_cv_lockstep_is_resolved_waiting(req_id):
+                self.speclink_cv_lockstep_held_drafts[req_id] = (
+                    list(spec_token_ids),
+                    spec_token_confidences,
+                )
+                request.spec_token_ids = []
+                request.spec_token_confidences = []
+                speclink_cv_append_event(
+                    self.speclink_cv_config,
+                    {
+                        "event": "draft_held_for_lockstep_iteration",
+                        "request_id": req_id,
+                        "new_draft_len": len(spec_token_ids),
+                    },
+                )
+                speclink_cv_append_profile(
+                    self.speclink_cv_config,
+                    {
+                        "event": "draft_held_for_lockstep_iteration",
+                        "request_id": req_id,
+                        "new_draft_len": len(spec_token_ids),
+                    },
+                )
+                continue
             request.spec_token_ids = spec_token_ids
+            request.spec_token_confidences = spec_token_confidences
 
     def update_draft_token_ids_in_output(
         self, draft_token_ids: DraftTokenIds, scheduler_output: SchedulerOutput
@@ -1831,6 +4178,17 @@ class Scheduler(SchedulerInterface):
         connector_delay_free_blocks, kv_xfer_params = self._connector_finished(request)
         self.encoder_cache_manager.free(request)
         request_id = request.request_id
+        self.speclink_cv_scheduled_prefix.pop(request_id, None)
+        self.speclink_cv_suffix_phase_req_ids.discard(request_id)
+        self.speclink_cv_async_pending_prefix.pop(request_id, None)
+        self.speclink_cv_force_one_shot_req_ids.discard(request_id)
+        self.speclink_cv_force_one_shot_reasons.pop(request_id, None)
+        self.speclink_cv_drop_next_draft_req_ids.discard(request_id)
+        self.speclink_cv_scheduled_suffix_lens.pop(request_id, None)
+        self.speclink_cv_suffix_replay_prefix_lens.pop(request_id, None)
+        self.speclink_cv_staged_suffix_pending_lens.pop(request_id, None)
+        self.speclink_cv_dense_realign_remaining.pop(request_id, None)
+        self._speclink_cv_forget_lockstep_request(request_id, "finished")
         self.finished_req_ids.add(request_id)
         if self.finished_req_ids_dict is not None:
             self.finished_req_ids_dict[request.client_index].add(request_id)

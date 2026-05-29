@@ -27,7 +27,7 @@ from vllm.model_executor.models.qwen3_dflash import DFlashQwen3ForCausalLM
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.platforms import current_platform
 from vllm.speclink_confidence_trace import (
-    enabled as speclink_trace_enabled,
+    capture_enabled as speclink_trace_capture_enabled,
     record_draft_features as speclink_trace_record_draft_features,
 )
 from vllm.utils.platform_utils import is_pin_memory_available
@@ -432,8 +432,22 @@ class SpecDecodeBaseProposer:
         slot_mappings: dict[str, torch.Tensor]
         | list[dict[str, torch.Tensor]]
         | None = None,
+        max_draft_tokens: int | None = None,
     ) -> torch.Tensor:
         batch_size = common_attn_metadata.batch_size()
+        num_speculative_tokens = self.num_speculative_tokens
+        if max_draft_tokens is not None:
+            num_speculative_tokens = max(
+                1, min(int(max_draft_tokens), self.num_speculative_tokens)
+            )
+            if self.parallel_drafting and num_speculative_tokens != (
+                self.num_speculative_tokens
+            ):
+                logger.warning_once(
+                    "SpecLink-CV staged drafting is disabled for parallel "
+                    "drafting models; using the full speculative width."
+                )
+                num_speculative_tokens = self.num_speculative_tokens
 
         if self.method in ("eagle3", "dflash"):
             assert isinstance(
@@ -491,31 +505,31 @@ class SpecDecodeBaseProposer:
                 last_hidden_states, hidden_states = ret_hidden_states
 
         sample_hidden_states = last_hidden_states[token_indices_to_sample]
-        trace_confidence = speclink_trace_enabled()
+        trace_confidence = speclink_trace_capture_enabled()
 
         # Early exit if there is only one draft token to be generated.
-        if self.num_speculative_tokens == 1 or self.parallel_drafting:
+        if num_speculative_tokens == 1 or self.parallel_drafting:
             if trace_confidence:
                 logits = self.model.compute_logits(sample_hidden_states)
                 if self.use_local_argmax_reduction:
                     draft_token_ids = self.model.get_top_tokens(sample_hidden_states)
                 else:
                     draft_token_ids = logits.argmax(dim=-1)
-                draft_token_ids = draft_token_ids.view(-1, self.num_speculative_tokens)
+                draft_token_ids = draft_token_ids.view(-1, num_speculative_tokens)
                 logits = logits.reshape(
-                    -1, self.num_speculative_tokens, logits.shape[-1]
+                    -1, num_speculative_tokens, logits.shape[-1]
                 )
                 speclink_trace_record_draft_features(
                     draft_token_ids=draft_token_ids,
                     logits_by_position=[
-                        logits[:, i, :] for i in range(self.num_speculative_tokens)
+                        logits[:, i, :] for i in range(num_speculative_tokens)
                     ],
                     temperature=sampling_metadata.temperature,
                     method=self.method,
                 )
                 return draft_token_ids
             draft_token_ids = self._greedy_sample(sample_hidden_states)
-            return draft_token_ids.view(-1, self.num_speculative_tokens)
+            return draft_token_ids.view(-1, num_speculative_tokens)
 
         if self.uses_mrope:
             positions = self.mrope_positions[:, token_indices_to_sample]
@@ -576,7 +590,7 @@ class SpecDecodeBaseProposer:
         # to remove the "padding" (i.e. rejected tokens).
         # Only apply this adjustment when we have rejected tokens
         # (i.e., not the first proposal).
-        if self.num_speculative_tokens > 1 and num_rejected_tokens_gpu is not None:
+        if num_speculative_tokens > 1 and num_rejected_tokens_gpu is not None:
             common_attn_metadata.seq_lens -= num_rejected_tokens_gpu
             # Invalidate the CPU-side shadows to avoid H<>D sync.
             common_attn_metadata._seq_lens_cpu = None
@@ -584,7 +598,7 @@ class SpecDecodeBaseProposer:
 
         block_size = self.block_size
         assert block_size > 0, "block_size has not been initialized."
-        for token_index in range(self.num_speculative_tokens - 1):
+        for token_index in range(num_speculative_tokens - 1):
             # Update the inputs.
             # cast to int32 is crucial when eagle model is compiled.
             # tensor.argmax() returns int64 by default.
