@@ -35,7 +35,6 @@ from vllm.multimodal.encoder_budget import MultiModalBudget
 from vllm.speclink_cv import (
     AsyncPrefixCandidate,
     SpecLinkCVRuntimeConfig,
-    apply_roofline_packing_policy as speclink_cv_apply_roofline_policy,
     append_event as speclink_cv_append_event,
     append_profile as speclink_cv_append_profile,
     choose_prefix_len as speclink_cv_choose_prefix_len,
@@ -115,9 +114,7 @@ class Scheduler(SchedulerInterface):
         self.speclink_cv_lockstep_req_to_group: dict[str, int] = {}
         self.speclink_cv_lockstep_group_members: dict[int, set[str]] = {}
         self.speclink_cv_lockstep_group_pending: dict[int, set[str]] = {}
-        self.speclink_cv_lockstep_held_drafts: dict[
-            str, tuple[list[int], list[float]]
-        ] = {}
+        self.speclink_cv_lockstep_held_drafts: dict[str, list[int]] = {}
         if self.speclink_cv_config.enable:
             logger.info(
                 "SpecLink-CV runtime config: %s",
@@ -455,8 +452,7 @@ class Scheduler(SchedulerInterface):
                 or req_id in self.speclink_cv_force_one_shot_req_ids
             ):
                 continue
-            request.spec_token_ids = list(held[0])
-            request.spec_token_confidences = list(held[1])
+            request.spec_token_ids = list(held)
             released_draft_req_ids.append(req_id)
         detail = {
             "event": "lockstep_iteration_group_released",
@@ -546,7 +542,6 @@ class Scheduler(SchedulerInterface):
                 selected_h, reason, decision = speclink_cv_choose_prefix_len(
                     logical_k,
                     self.speclink_cv_config,
-                    getattr(request, "spec_token_confidences", None),
                 )
                 self.speclink_cv_async_pending_prefix.pop(req_id, None)
                 staged_prefix = (
@@ -585,13 +580,6 @@ class Scheduler(SchedulerInterface):
                         "suffix_len": pending_plan["suffix_len"],
                         "staged_drafting": staged_prefix,
                         "reason": reason,
-                        "confidence_sizing": (
-                            self.speclink_cv_config.confidence_sizing
-                        ),
-                        "confidence_source": decision.get(
-                            "confidence_source", ""
-                        ),
-                        "selected_benefit": decision.get("selected_benefit"),
                     },
                 )
             candidates.append(
@@ -599,9 +587,6 @@ class Scheduler(SchedulerInterface):
                     request_id=req_id,
                     selected_h=int(pending_plan["selected_h"]),
                     k=int(pending_plan["k"]),
-                    selected_benefit=float(
-                        pending_plan["decision"].get("selected_benefit") or 0.0
-                    ),
                     queue_enter_time=float(pending_plan["queue_enter_time"]),
                 )
             )
@@ -612,6 +597,13 @@ class Scheduler(SchedulerInterface):
 
         waiting_reqs = len(self.waiting) + len(self.skipped_waiting)
         running_has_capacity = len(self.running) < self.max_num_running_reqs
+        active_seq_budget = max(
+            1,
+            min(
+                self.max_num_running_reqs,
+                len(self.running) if self.running else self.max_num_running_reqs,
+            ),
+        )
         has_other_ready_work = (
             len(candidate_req_ids) < len(self.running)
             or (running_has_capacity and waiting_reqs > 0)
@@ -641,6 +633,7 @@ class Scheduler(SchedulerInterface):
                 "dispatch_tokens": selected_tokens,
                 "token_budget": self.max_num_scheduled_tokens,
                 "seq_budget": 1,
+                "active_seq_budget": active_seq_budget,
                 "allow_batched_prefix": False,
                 "global_batch_barrier": self.speclink_cv_config.global_batch_barrier,
                 "waiting_reqs": waiting_reqs,
@@ -702,7 +695,7 @@ class Scheduler(SchedulerInterface):
                 "selected_tokens": selected_tokens,
                 "dispatch_tokens": selected_tokens,
                 "token_budget": token_budget,
-                "seq_budget": self.max_num_running_reqs,
+                "seq_budget": active_seq_budget,
                 "allow_batched_prefix": self.speclink_cv_config.allow_batched_prefix,
                 "global_batch_barrier": True,
                 "waiting_reqs": waiting_reqs,
@@ -710,13 +703,32 @@ class Scheduler(SchedulerInterface):
             }
             dispatch_req_ids = {candidate.request_id for candidate in candidates}
         else:
+            candidate_shape_lens = {
+                int(candidate.selected_h) for candidate in candidates
+            }
+            ready_same_shape_seqs = 0
+            if (
+                self.speclink_cv_config.prefix_wavefront
+                and self.speclink_cv_config.allow_batched_suffix
+                and len(candidate_shape_lens) == 1
+            ):
+                candidate_shape_len = next(iter(candidate_shape_lens))
+                ready_same_shape_seqs = sum(
+                    1
+                    for request in self.running
+                    if (
+                        request.request_id in self.speclink_cv_suffix_phase_req_ids
+                        and len(request.spec_token_ids) == candidate_shape_len
+                    )
+                )
             dispatch_req_ids, dispatch_detail = speclink_cv_select_async_dispatch(
                 candidates,
                 config=self.speclink_cv_config,
                 token_budget=self.max_num_scheduled_tokens,
-                seq_budget=self.max_num_running_reqs,
+                seq_budget=active_seq_budget,
                 now=scheduled_timestamp,
                 has_other_ready_work=has_other_ready_work,
+                ready_same_shape_seqs=ready_same_shape_seqs,
             )
         if candidates:
             speclink_cv_append_profile(
@@ -843,6 +855,41 @@ class Scheduler(SchedulerInterface):
                         "event": "global_batch_barrier_reordered",
                         "phase": "prefix",
                         "reason": "request_ordinal_row_alignment",
+                        "dispatch_request_ids": [
+                            request.request_id
+                            for request in self.running
+                            if request.request_id in dispatch_req_ids
+                        ],
+                    },
+                )
+            elif (
+                self.speclink_cv_config.prefix_wavefront
+                and speclink_cv_async_dispatch_plans
+            ):
+                dispatch_req_ids = set(speclink_cv_async_dispatch_plans)
+                original_index = {
+                    request.request_id: index
+                    for index, request in enumerate(self.running)
+                }
+                self.running.sort(
+                    key=lambda request: (
+                        0 if request.request_id in dispatch_req_ids else 1,
+                        (
+                            _speclink_cv_request_order_key(request.request_id)
+                            if request.request_id in dispatch_req_ids
+                            else (
+                                original_index[request.request_id],
+                                request.request_id,
+                            )
+                        ),
+                    )
+                )
+                speclink_cv_append_profile(
+                    self.speclink_cv_config,
+                    {
+                        "event": "prefix_wave_reordered",
+                        "phase": "prefix",
+                        "reason": "wavefront_prefix_lane",
                         "dispatch_request_ids": [
                             request.request_id
                             for request in self.running
@@ -1123,6 +1170,17 @@ class Scheduler(SchedulerInterface):
                         },
                     )
 
+        speclink_cv_prefix_wave_req_ids: set[str] = (
+            set(speclink_cv_async_dispatch_plans)
+            if (
+                self.speclink_cv_config.enable
+                and self.speclink_cv_config.prefix_wavefront
+                and self.speclink_cv_config.prefix_wave_exclusive
+                and speclink_cv_async_dispatch_plans
+            )
+            else set()
+        )
+
         if (
             speclink_cv_isolated_req_id is None
             and self.speclink_cv_config.force_decode_isolation
@@ -1194,6 +1252,22 @@ class Scheduler(SchedulerInterface):
                         "reason": (
                             "batch_wide_prefix_reject_group_barrier"
                         ),
+                    },
+                )
+                req_index += 1
+                continue
+            if (
+                speclink_cv_prefix_wave_req_ids
+                and request.request_id not in speclink_cv_prefix_wave_req_ids
+            ):
+                speclink_cv_append_profile(
+                    self.speclink_cv_config,
+                    {
+                        "event": "verify_chunk_waiting",
+                        "phase": "prefix_wave_lane",
+                        "request_id": request.request_id,
+                        "wave_request_ids": sorted(speclink_cv_prefix_wave_req_ids),
+                        "reason": "hold_non_prefix_wave_work",
                     },
                 )
                 req_index += 1
@@ -1395,21 +1469,6 @@ class Scheduler(SchedulerInterface):
                         selected_h, reason, decision = speclink_cv_choose_prefix_len(
                             logical_k,
                             self.speclink_cv_config,
-                            getattr(request, "spec_token_confidences", None),
-                        )
-                        selected_h, reason, decision = (
-                            speclink_cv_apply_roofline_policy(
-                                k=logical_k,
-                                selected_h=selected_h,
-                                reason=reason,
-                                decision=decision,
-                                config=self.speclink_cv_config,
-                                candidate_seq_count=min(
-                                    len(self.running), speclink_cv_prefix_seq_budget
-                                ),
-                                token_budget=self.max_num_scheduled_tokens,
-                                seq_budget=self.max_num_running_reqs,
-                            )
                         )
                     staged_prefix = (
                         self.speclink_cv_config.staged_drafting
@@ -1433,49 +1492,6 @@ class Scheduler(SchedulerInterface):
                             "reason": reason,
                             "decision": decision,
                         }
-                    elif (
-                        self.speclink_cv_config.roofline_packing
-                        and reason == "roofline_fallback_one_shot"
-                    ):
-                        speclink_cv_append_event(
-                            self.speclink_cv_config,
-                            {
-                                "event": "roofline_fallback_one_shot",
-                                "request_id": request.request_id,
-                                "k": k,
-                                "selected_h": selected_h,
-                                "reason": reason,
-                                "confidence_sizing": (
-                                    self.speclink_cv_config.confidence_sizing
-                                ),
-                                "confidence_source": decision.get(
-                                    "confidence_source", ""
-                                ),
-                                "selected_benefit": decision.get(
-                                    "selected_benefit"
-                                ),
-                                "roofline": decision.get("roofline", {}),
-                            },
-                        )
-                        speclink_cv_append_profile(
-                            self.speclink_cv_config,
-                            {
-                                "event": "verify_chunk_decision",
-                                "phase": "one_shot",
-                                "fallback_reason": "roofline_fallback_one_shot",
-                                "request_id": request.request_id,
-                                "k": k,
-                                "selected_h": selected_h,
-                                "scheduled_chunk_len": k,
-                                "suffix_len": 0,
-                                "reason": reason,
-                                "confidence_sizing": (
-                                    self.speclink_cv_config.confidence_sizing
-                                ),
-                                "roofline": decision.get("roofline", {}),
-                            },
-                        )
-
             num_new_tokens = (
                 request.num_tokens_with_spec
                 + request.num_output_placeholders
@@ -1688,24 +1704,6 @@ class Scheduler(SchedulerInterface):
                                     )
                                 ),
                                 "reason": speclink_cv_prefix_plan["reason"],
-                                "confidence_sizing": (
-                                    self.speclink_cv_config.confidence_sizing
-                                ),
-                                "confidence_source": (
-                                    speclink_cv_prefix_plan["decision"].get(
-                                        "confidence_source", ""
-                                    )
-                                ),
-                                "selected_benefit": (
-                                    speclink_cv_prefix_plan["decision"].get(
-                                        "selected_benefit"
-                                    )
-                                ),
-                                "calibration_path": (
-                                    speclink_cv_prefix_plan["decision"].get(
-                                        "calibration_path", ""
-                                    )
-                                ),
                                 "async_queue": self.speclink_cv_config.async_queue,
                                 "allow_batched_prefix": (
                                     self.speclink_cv_config.allow_batched_prefix
@@ -1751,19 +1749,6 @@ class Scheduler(SchedulerInterface):
                                     )
                                 ),
                                 "reason": speclink_cv_prefix_plan["reason"],
-                                "confidence_sizing": (
-                                    self.speclink_cv_config.confidence_sizing
-                                ),
-                                "confidence_source": (
-                                    speclink_cv_prefix_plan["decision"].get(
-                                        "confidence_source", ""
-                                    )
-                                ),
-                                "selected_benefit": (
-                                    speclink_cv_prefix_plan["decision"].get(
-                                        "selected_benefit"
-                                    )
-                                ),
                                 "scheduled_tokens_for_request": num_new_tokens,
                                 "shadow_token_budget_debit": (
                                     speclink_cv_token_budget_debit
@@ -1791,9 +1776,6 @@ class Scheduler(SchedulerInterface):
                                 "max_num_scheduled_tokens": (
                                     self.max_num_scheduled_tokens
                                 ),
-                                "roofline": speclink_cv_prefix_plan[
-                                    "decision"
-                                ].get("roofline", {}),
                             },
                         )
                     elif request.request_id in self.speclink_cv_suffix_phase_req_ids:
@@ -1867,7 +1849,6 @@ class Scheduler(SchedulerInterface):
                 # New spec tokens will be set in `update_draft_token_ids` before the
                 # next step when applicable.
                 request.spec_token_ids = []
-                request.spec_token_confidences = []
 
             # Encoder-related.
             if encoder_inputs_to_schedule:
@@ -1887,6 +1868,11 @@ class Scheduler(SchedulerInterface):
         if (
             speclink_cv_isolated_req_id is not None
             or speclink_cv_grouped_force_one_shot_req_ids
+            or (
+                self.speclink_cv_config.prefix_wavefront
+                and self.speclink_cv_config.prefix_wave_exclusive
+                and speclink_cv_prefix_chunks_this_step > 0
+            )
             or (
                 self.speclink_cv_config.lockstep_iteration_barrier
                 and self.speclink_cv_lockstep_group_pending
@@ -2225,8 +2211,6 @@ class Scheduler(SchedulerInterface):
                 "max_num_scheduled_tokens": self.max_num_scheduled_tokens,
                 "max_num_running_reqs": self.max_num_running_reqs,
                 "async_queue": self.speclink_cv_config.async_queue,
-                "roofline_packing": self.speclink_cv_config.roofline_packing,
-                "confidence_sizing": self.speclink_cv_config.confidence_sizing,
                 "allow_batched_prefix": self.speclink_cv_config.allow_batched_prefix,
                 "prefix_seq_budget": speclink_cv_prefix_seq_budget,
                 "isolated_request_id": speclink_cv_isolated_req_id,
@@ -2362,7 +2346,6 @@ class Scheduler(SchedulerInterface):
         request.num_computed_tokens = 0
         if request.spec_token_ids:
             request.spec_token_ids = []
-        request.spec_token_confidences = []
         self.speclink_cv_scheduled_prefix.pop(request.request_id, None)
         self.speclink_cv_suffix_phase_req_ids.discard(request.request_id)
         self.speclink_cv_async_pending_prefix.pop(request.request_id, None)
@@ -3450,7 +3433,6 @@ class Scheduler(SchedulerInterface):
                 if speclink_cv_suffix_to_requeue is not None:
                     if not stopped and not request.is_finished():
                         request.spec_token_ids = speclink_cv_suffix_to_requeue
-                        request.spec_token_confidences = []
                         self.speclink_cv_suffix_phase_req_ids.add(req_id)
                     else:
                         speclink_cv_append_event(
@@ -3521,7 +3503,6 @@ class Scheduler(SchedulerInterface):
                             },
                         )
                     request.spec_token_ids = speclink_cv_confirm_one_shot_tokens
-                    request.spec_token_confidences = []
                     self.speclink_cv_force_one_shot_req_ids.add(req_id)
                     self.speclink_cv_force_one_shot_reasons[
                         req_id
@@ -3888,20 +3869,12 @@ class Scheduler(SchedulerInterface):
                 # Ignore draft tokens for prefill chunks.
                 if request.spec_token_ids:
                     request.spec_token_ids = []
-                request.spec_token_confidences = []
                 self.speclink_cv_async_pending_prefix.pop(req_id, None)
                 continue
 
             if self.structured_output_manager.should_advance(request):
                 metadata = request.structured_output_request
                 spec_token_ids = metadata.grammar.validate_tokens(spec_token_ids)  # type: ignore[union-attr]
-            spec_token_confidences: list[float] = []
-            if draft_token_ids.draft_token_probs is not None:
-                if req_index < len(draft_token_ids.draft_token_probs):
-                    probs = draft_token_ids.draft_token_probs[req_index]
-                    spec_token_confidences = [
-                        float(value) for value in probs[: len(spec_token_ids)]
-                    ]
 
             staged_suffix_len = self.speclink_cv_staged_suffix_pending_lens.pop(
                 req_id, None
@@ -3909,9 +3882,6 @@ class Scheduler(SchedulerInterface):
             if staged_suffix_len is not None:
                 suffix_tokens = list(spec_token_ids[:staged_suffix_len])
                 request.spec_token_ids = suffix_tokens
-                request.spec_token_confidences = spec_token_confidences[
-                    : len(suffix_tokens)
-                ]
                 self.speclink_cv_async_pending_prefix.pop(req_id, None)
                 if suffix_tokens:
                     self.speclink_cv_suffix_phase_req_ids.add(req_id)
@@ -3962,7 +3932,6 @@ class Scheduler(SchedulerInterface):
                 # one dense TLM token before normal drafting resumes.
                 self.speclink_cv_drop_next_draft_req_ids.discard(req_id)
                 request.spec_token_ids = []
-                request.spec_token_confidences = []
                 self.speclink_cv_async_pending_prefix.pop(req_id, None)
                 speclink_cv_append_event(
                     self.speclink_cv_config,
@@ -3996,7 +3965,6 @@ class Scheduler(SchedulerInterface):
                 else:
                     self.speclink_cv_dense_realign_remaining.pop(req_id, None)
                 request.spec_token_ids = []
-                request.spec_token_confidences = []
                 self.speclink_cv_async_pending_prefix.pop(req_id, None)
                 speclink_cv_append_event(
                     self.speclink_cv_config,
@@ -4024,12 +3992,8 @@ class Scheduler(SchedulerInterface):
             # Add newly generated spec token ids to the request.
             self.speclink_cv_async_pending_prefix.pop(req_id, None)
             if self._speclink_cv_lockstep_is_resolved_waiting(req_id):
-                self.speclink_cv_lockstep_held_drafts[req_id] = (
-                    list(spec_token_ids),
-                    spec_token_confidences,
-                )
+                self.speclink_cv_lockstep_held_drafts[req_id] = list(spec_token_ids)
                 request.spec_token_ids = []
-                request.spec_token_confidences = []
                 speclink_cv_append_event(
                     self.speclink_cv_config,
                     {
@@ -4048,7 +4012,6 @@ class Scheduler(SchedulerInterface):
                 )
                 continue
             request.spec_token_ids = spec_token_ids
-            request.spec_token_confidences = spec_token_confidences
 
     def update_draft_token_ids_in_output(
         self, draft_token_ids: DraftTokenIds, scheduler_output: SchedulerOutput

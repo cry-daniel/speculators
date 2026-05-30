@@ -705,130 +705,78 @@ Outputs:
 - `figures/threshold_tradeoff.png`
 - `report.md`
 
-## SpecLink-CV Live vLLM Slice
+## SpecLink-CV Focused Throughput
 
-SpecLink-CV is a gated live vLLM slice for fixed-prefix chunked verification.
-It is intended for math-quality and throughput experiments, not token-id exact
-debugging. The final fast path keeps the implementation narrow:
+SpecLink-CV is a gated vLLM prototype for fixed-prefix chunked verification.
+The maintained performance path is intentionally narrow:
 
 - `SPECLINK_CV_ENABLE=1` enables the scheduler path.
-- `SPECLINK_CV_FORCE_PREFIX_LEN=8` with `NUM_SPEC_TOKENS=16` gives the current
-  preferred `h=8 + suffix=8` split; if unset, the fixed-half policy is used.
-- `SPECLINK_CV_ASYNC_QUEUE=1` enables the live prefix queue.
-- `SPECLINK_CV_STAGED_DRAFTING=1` drafts only the prefix first, then drafts the
+- `SPECLINK_CV_ASYNC_QUEUE=1` queues prefix verifier chunks before dispatch.
+- `SPECLINK_CV_STAGED_DRAFTING=1` drafts the prefix first, then drafts the
   suffix only after the prefix is fully accepted.
 - `SPECLINK_CV_ALLOW_BATCHED_PREFIX=1` and
-  `SPECLINK_CV_ALLOW_BATCHED_SUFFIX=1` allow prefix/suffix verifier batching.
-- `SPECLINK_CV_ROOFLINE_PACKING=1` enables the utilization-aware prefix queue
-  packing policy.
-- `SPECLINK_CV_LOG_JSONL` and `SPECLINK_CV_PROFILE_JSONL` write compact runtime
-  event streams for later analysis.
+  `SPECLINK_CV_ALLOW_BATCHED_SUFFIX=1` allow batched prefix/suffix verification.
+- `SPECLINK_CV_PREFIX_FULL_CUDAGRAPH=1` enables FULL CUDA graph use for uniform
+  prefix verifier chunks.
+- `SPECLINK_CV_FORCE_PREFIX_LEN=N` fixes the prefix length; for the current
+  recommended Qwen3 math probe use `K=16,h=8`.
 
-Intermediate probes, failed smokes, and diagnostic outputs should go under
-`examples/evaluate/eval-guidellm/temp/`; keep `results/` for final reports.
-
-Focused CPU-side checks from the repo root:
-
-```bash
-conda run -n spec python -m tools.speclink_cv.test_chunk_decision
-conda run -n spec python -m tools.speclink_cv.test_state_machine
-conda run -n spec python -m tools.speclink_cv.test_async_queue
-conda run -n spec python -m tools.speclink_cv.test_roofline_packing
-conda run -n spec python -m tools.speclink_cv.test_correctness_smoke
-conda run -n spec python -m tools.speclink_cv.test_vllm_runtime_config
-```
-
-## SpecLink-CV GuideLLM Matrix Runner
-
-`examples/evaluate/eval-guidellm/scripts/run_speclink_cv_guidellm_matrix.py`
-starts `vllm serve`, waits for `/health` with a proxy-safe raw socket check,
-runs GuideLLM, parses vLLM speculative metrics, and writes per-run logs plus
-top-level `status.csv`, `summary_metrics.csv`, `summary_metrics.json`,
-`report.md`, `scripts/run_commands.sh`, report subdirectories
-`00_env/` through `09_reports/`, raw run directories under `runs/`, and figure
-source tables under `08_figures/`. For `cv_*` methods it adds
-`--no-async-scheduling` because SpecLink-CV's live prefix/suffix scheduler
-logic is implemented in the regular V1 scheduler; `SPECLINK_CV_ASYNC_QUEUE` is
-the experiment's own verification queue and is independent from vLLM's
-scheduler async mode.
-The summary includes text-level `exact_match_vs_eagle3` by aligning GuideLLM
-successful requests by `request_args` and comparing each `cv_*` output to the
-matching `eagle3_oneshot` output for the same model/dataset/K/batch-size case.
-Treat `exact_match_vs_eagle3 < 1.0` as a drift diagnostic. The current
-performance gate is math answer quality, not token-id equality with one-shot
-EAGLE3.
-
-The runner forces `NO_PROXY/no_proxy` to include local addresses and kills the
-vLLM process group during cleanup. This matters in the current environment
-because local HTTP proxy variables can otherwise trap `127.0.0.1` health checks,
-and a failed API server can leave an EngineCore process holding GPU memory.
-
-Smoke command:
+Use the focused runner for throughput and profiling:
 
 ```bash
 cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators
-conda run -n spec python -u examples/evaluate/eval-guidellm/scripts/run_speclink_cv_guidellm_matrix.py \
-  --smoke \
-  --max-requests 1 \
-  --enforce-eager \
-  --gpu-memory-utilization 0.75 \
-  --port 8051 \
-  --output-root examples/evaluate/eval-guidellm/temp/speclink_cv_guidellm_smoke_TIMESTAMP
+/ACALAB/stu1/miniconda3/envs/spec/bin/python -u \
+  examples/evaluate/eval-guidellm/scripts/run_speclink_cv_qwen_math.py \
+  --python-bin /ACALAB/stu1/miniconda3/envs/spec/bin/python \
+  --methods eagle3_oneshot,cv_half_async_staged_fullgraph \
+  --k 16 --force-prefix-len 8 \
+  --batch-size 64 --server-max-num-seqs 64 \
+  --warmup-s 3 --measurement-s 10 --cooldown-s 2 \
+  --output-root examples/evaluate/eval-guidellm/temp/speclink_cv_qwen_math_TIMESTAMP
 ```
 
-Full matrix command:
-
-```bash
-conda run -n spec python -u examples/evaluate/eval-guidellm/scripts/run_speclink_cv_guidellm_matrix.py \
-  --models qwen3_8b,llama3_1_8b \
-  --datasets math,mtbench \
-  --ks 8,12 \
-  --batch-sizes 8,16,32 \
-  --methods pure_vllm,eagle3_oneshot,cv_half_sync_simple,cv_half_sync_roofline,cv_half_async_simple,cv_half_async_roofline,cv_half_async_staged_simple \
-  --max-requests 80 \
-  --output-root examples/evaluate/eval-guidellm/results/speclink_cv_guidellm_TIMESTAMP
-```
-
-Equivalent one-command wrapper:
-
-```bash
-OUTPUT_ROOT=examples/evaluate/eval-guidellm/results/speclink_cv_guidellm_TIMESTAMP \
-  examples/evaluate/eval-guidellm/scripts/run_speclink_cv_guidellm_full.sh
-```
-
-The wrapper defaults to `--resume` and `--disable-vllm-async-scheduling` so CV
-uses the regular V1 scheduler path. Use `CASE_OFFSET` and `CASE_LIMIT` to split
-large runs across GPU sessions.
-
-Use `--dry-run` to write planned commands only, `--analyze-only` to rebuild
-summary files from an existing output root, and `--resume` to reuse any run
-directory that already contains `guidellm_results.json`. `--case-offset N` and
-`--case-limit M` run or analyze a slice of the planned matrix, which is useful
-for splitting the 240-case matrix across long GPU sessions. Reusing one output
-root with `--resume` is the safest way to continue after interruption. The
-runner passes GuideLLM `--random-seed 42` by default for reproducible dataset
-sampling. Add `--disable-vllm-async-scheduling` when you need the EAGLE3
-one-shot baseline to use the same regular V1 scheduler mode as the CV runs for
-correctness/fairness diagnosis.
-
-One-click math-quality run:
-
-```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
-conda run -n spec bash ./run_speclink_cv_math_quality.sh
-```
-
-Contribution ablation:
-
-```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
-conda run -n spec bash ./run_speclink_cv_contribution_ablation.sh
-```
+The runner starts one vLLM server per method, runs the closed-loop
+`tools/speclink_cv/steady_state_openai_benchmark.py` client, writes
+`summary.csv`, `summary.md`, and per-method `runs/*/` logs, then tears the
+server down. It disables vLLM async scheduling because the CV prefix/suffix
+state machine runs in the regular V1 scheduler path. It also disables uvicorn
+access logs and periodic vLLM stats logs by default to reduce host-side noise;
+use `--no-disable-uvicorn-access-log --no-disable-log-stats` when debugging
+server traffic.
 
 Throughput must be reported as steady-state saturated output tokens/s at
 concurrency N: the client keeps N active requests during a fixed measurement
 window, counts only output tokens generated inside that window, and excludes
-warmup and drain.
+warmup and drain. Intermediate probes, failed smokes, and diagnostic outputs
+should go under `examples/evaluate/eval-guidellm/temp/`; keep `results/` for
+final reports.
+
+For hardware profiling, add `--nsys-profile` to the focused runner. It wraps
+the vLLM server in Nsight Systems, calls `/start_profile` before the benchmark,
+calls `/stop_profile` afterwards, exports `nsys/*.sqlite`, and writes
+`hardware_profile_summary.csv` plus `hardware_profile_summary.md` via
+`tools/speclink_cv/nsys_profile_summary.py`.
+
+Current Qwen3 math smoke references:
+
+- K=8,h=4, concurrency=32: EAGLE3 2677.0 tok/s, CV 3611.9 tok/s, 1.349x.
+- K=8,h=4, concurrency=64: EAGLE3 3064.5 tok/s, CV 4440.7 tok/s, 1.449x.
+- K=16,h=8, concurrency=32: EAGLE3 1537.3 tok/s, CV 2638.4 tok/s, 1.716x.
+- K=16,h=8, concurrency=64: EAGLE3 1766.7 tok/s, CV 3039.8 tok/s, 1.721x.
+
+Matching K=8,h=4, concurrency=64 Nsight short run:
+
+- EAGLE3: 3090.75 tok/s, 92.1% kernel busy, 81.5% SM active, 69.2% Tensor
+  active, 4.612s D2H API time, and 0.490s global kernel gaps.
+- CV: 4339.5 tok/s, 90.3% kernel busy, 80.2% SM active, 68.0% Tensor active,
+  4.856s D2H API time, and 0.596s global kernel gaps.
+
+Interpretation: large-batch CV is faster because each generated token pays less
+target-verifier work while the remaining prefix verifier chunks are large
+enough to keep tensor cores reasonably active. It is not faster because each CV
+window is busier than EAGLE3; SM/Tensor active remain slightly lower and
+D2H/gaps remain larger. Next source-level optimization should focus on moving
+more prefix decision/suffix dispatch work out of the CPU-visible scheduler loop.
 
 ## Current Run Notes
 

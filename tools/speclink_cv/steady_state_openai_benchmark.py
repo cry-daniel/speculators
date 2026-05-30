@@ -102,6 +102,12 @@ class CounterState:
                 self.requests_errored += 1
             self.request_rows.append(row)
 
+    def should_stop_for_errors(self, max_errors: int) -> bool:
+        if max_errors <= 0:
+            return False
+        with self.lock:
+            return self.requests_errored >= max_errors
+
 
 def read_jsonl(path: Path, max_prompts: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -330,7 +336,7 @@ def worker(
     stop_queue: queue.Queue[str],
 ) -> None:
     session = requests.Session()
-    while time.perf_counter() < measurement_end:
+    while time.perf_counter() < measurement_end and stop_queue.empty():
         item = state.next_work(rows)
         request_id = (
             f"steady-{args.run_label}-w{worker_id}-s{item.sequence_index:08d}"
@@ -387,6 +393,9 @@ def worker(
                 }
             )
             state.add_request_row(result)
+            if not result.get("ok") and state.should_stop_for_errors(args.max_errors):
+                stop_queue.put(f"reached --max-errors={args.max_errors}")
+                return
         except Exception as exc:  # noqa: BLE001
             state.add_request_row(
                 {
@@ -502,6 +511,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--timeout", type=float, default=1800.0)
+    parser.add_argument(
+        "--max-errors",
+        type=int,
+        default=64,
+        help=(
+            "Stop early after this many failed requests. Use 0 to disable. "
+            "This keeps failed server runs from producing very large logs."
+        ),
+    )
     parser.add_argument("--no-continuous-usage", action="store_true")
     parser.add_argument("--allow-final-usage-fallback", action="store_true")
     parser.add_argument("--output-dir", type=Path, required=True)

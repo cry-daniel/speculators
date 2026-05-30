@@ -27,7 +27,7 @@ from vllm.model_executor.models.qwen3_dflash import DFlashQwen3ForCausalLM
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.platforms import current_platform
 from vllm.speclink_confidence_trace import (
-    capture_enabled as speclink_trace_capture_enabled,
+    enabled as speclink_trace_enabled,
     record_draft_features as speclink_trace_record_draft_features,
 )
 from vllm.utils.platform_utils import is_pin_memory_available
@@ -505,7 +505,7 @@ class SpecDecodeBaseProposer:
                 last_hidden_states, hidden_states = ret_hidden_states
 
         sample_hidden_states = last_hidden_states[token_indices_to_sample]
-        trace_confidence = speclink_trace_capture_enabled()
+        trace_confidence = speclink_trace_enabled()
 
         # Early exit if there is only one draft token to be generated.
         if num_speculative_tokens == 1 or self.parallel_drafting:
