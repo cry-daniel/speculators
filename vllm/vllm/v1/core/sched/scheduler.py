@@ -32,6 +32,10 @@ from vllm.model_executor.layers.fused_moe.routed_experts_capturer import (
 )
 from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
 from vllm.multimodal.encoder_budget import MultiModalBudget
+from vllm.smurfs_dynamic import (
+    enabled as smurfs_dynamic_enabled,
+    record_verify as smurfs_dynamic_record_verify,
+)
 from vllm.v1.core.encoder_cache_manager import (
     EncoderCacheManager,
     EncoderDecoderCacheManager,
@@ -1382,6 +1386,17 @@ class Scheduler(SchedulerInterface):
                 # the scheduled spec tokens count and so is similarly adjusted.
                 if request.num_output_placeholders > 0:
                     request.num_output_placeholders -= num_rejected
+                method = (
+                    self.vllm_config.speculative_config.method
+                    if self.vllm_config.speculative_config is not None
+                    else None
+                )
+                smurfs_dynamic_record_verify(
+                    num_draft_tokens=num_draft_tokens,
+                    num_accepted_tokens=num_accepted,
+                    method=method,
+                    request_id=req_id,
+                )
                 spec_decoding_stats = self.make_spec_decoding_stats(
                     spec_decoding_stats,
                     num_draft_tokens=num_draft_tokens,
@@ -1675,6 +1690,12 @@ class Scheduler(SchedulerInterface):
                 self.encoder_cache_manager.free_encoder_input(request, input_id)
 
     def update_draft_token_ids(self, draft_token_ids: DraftTokenIds) -> None:
+        spec_method = (
+            self.vllm_config.speculative_config.method
+            if self.vllm_config.speculative_config is not None
+            else None
+        )
+        dynamic_smurfs_enabled = smurfs_dynamic_enabled(spec_method)
         for req_id, spec_token_ids in zip(
             draft_token_ids.req_ids,
             draft_token_ids.draft_token_ids,
@@ -1689,6 +1710,13 @@ class Scheduler(SchedulerInterface):
                 if request.spec_token_ids:
                     request.spec_token_ids = []
                 continue
+
+            if dynamic_smurfs_enabled:
+                spec_token_ids = [
+                    int(token_id)
+                    for token_id in spec_token_ids
+                    if int(token_id) >= 0
+                ]
 
             # Add newly generated spec token ids to the request.
             if self.structured_output_manager.should_advance(request):

@@ -30,6 +30,10 @@ from vllm.speclink_confidence_trace import (
     enabled as speclink_trace_enabled,
     record_draft_features as speclink_trace_record_draft_features,
 )
+from vllm.smurfs_dynamic import (
+    current_draft_limit as smurfs_dynamic_current_draft_limit,
+    enabled as smurfs_dynamic_enabled,
+)
 from vllm.utils.platform_utils import is_pin_memory_available
 from vllm.v1.attention.backend import CommonAttentionMetadata
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
@@ -414,6 +418,20 @@ class SpecDecodeBaseProposer:
             return self.model.get_top_tokens(hidden_states)
         return self.model.compute_logits(hidden_states).argmax(dim=-1)
 
+    def _pad_lazy_draft_token_ids(
+        self,
+        draft_token_ids: torch.Tensor,
+        effective_num_speculative_tokens: int,
+    ) -> torch.Tensor:
+        if effective_num_speculative_tokens >= self.num_speculative_tokens:
+            return draft_token_ids
+        pad_width = self.num_speculative_tokens - effective_num_speculative_tokens
+        padding = draft_token_ids.new_full(
+            (draft_token_ids.shape[0], pad_width),
+            -1,
+        )
+        return torch.cat((draft_token_ids, padding), dim=1)
+
     def propose(
         self,
         # [num_tokens]
@@ -434,6 +452,22 @@ class SpecDecodeBaseProposer:
         | None = None,
     ) -> torch.Tensor:
         batch_size = common_attn_metadata.batch_size()
+        trace_confidence = speclink_trace_enabled()
+        smurfs_dynamic = (
+            smurfs_dynamic_enabled(self.method)
+            and self.method != "draft_model"
+        )
+        effective_num_speculative_tokens = self.num_speculative_tokens
+        if smurfs_dynamic:
+            effective_num_speculative_tokens = smurfs_dynamic_current_draft_limit(
+                self.num_speculative_tokens,
+                active_requests=batch_size,
+                method=self.method,
+            )
+        effective_num_speculative_tokens = max(
+            1,
+            min(self.num_speculative_tokens, effective_num_speculative_tokens),
+        )
 
         if self.method in ("eagle3", "dflash"):
             assert isinstance(
@@ -449,17 +483,42 @@ class SpecDecodeBaseProposer:
             )
             assert target_hidden_states.shape[-1] == self.hidden_size
 
-        num_tokens, token_indices_to_sample, common_attn_metadata = (
-            self.set_inputs_first_pass(
-                target_token_ids=target_token_ids,
-                next_token_ids=next_token_ids,
-                target_positions=target_positions,
-                target_hidden_states=target_hidden_states,
-                token_indices_to_sample=token_indices_to_sample,
-                cad=common_attn_metadata,
-                num_rejected_tokens_gpu=num_rejected_tokens_gpu,
+        old_extra_slots_per_request = self.extra_slots_per_request
+        old_net_num_new_slots_per_request = self.net_num_new_slots_per_request
+        old_needs_extra_input_slots = self.needs_extra_input_slots
+        if self.parallel_drafting:
+            self.extra_slots_per_request = effective_num_speculative_tokens
+            self.net_num_new_slots_per_request = (
+                self.extra_slots_per_request
+                - (
+                    1
+                    if (
+                        self.pass_hidden_states_to_model
+                        and self.method != "dflash"
+                    )
+                    else 0
+                )
             )
-        )
+            self.needs_extra_input_slots = self.net_num_new_slots_per_request > 0
+        try:
+            num_tokens, token_indices_to_sample, common_attn_metadata = (
+                self.set_inputs_first_pass(
+                    target_token_ids=target_token_ids,
+                    next_token_ids=next_token_ids,
+                    target_positions=target_positions,
+                    target_hidden_states=target_hidden_states,
+                    token_indices_to_sample=token_indices_to_sample,
+                    cad=common_attn_metadata,
+                    num_rejected_tokens_gpu=num_rejected_tokens_gpu,
+                )
+            )
+        finally:
+            if self.parallel_drafting:
+                self.extra_slots_per_request = old_extra_slots_per_request
+                self.net_num_new_slots_per_request = (
+                    old_net_num_new_slots_per_request
+                )
+                self.needs_extra_input_slots = old_needs_extra_input_slots
 
         per_group_attn_metadata, per_layer_attn_metadata = (
             self.build_per_group_and_layer_attn_metadata(common_attn_metadata)
@@ -491,31 +550,48 @@ class SpecDecodeBaseProposer:
                 last_hidden_states, hidden_states = ret_hidden_states
 
         sample_hidden_states = last_hidden_states[token_indices_to_sample]
-        trace_confidence = speclink_trace_enabled()
 
         # Early exit if there is only one draft token to be generated.
-        if self.num_speculative_tokens == 1 or self.parallel_drafting:
+        if effective_num_speculative_tokens == 1 or self.parallel_drafting:
             if trace_confidence:
                 logits = self.model.compute_logits(sample_hidden_states)
                 if self.use_local_argmax_reduction:
                     draft_token_ids = self.model.get_top_tokens(sample_hidden_states)
                 else:
                     draft_token_ids = logits.argmax(dim=-1)
-                draft_token_ids = draft_token_ids.view(-1, self.num_speculative_tokens)
+                draft_token_ids = draft_token_ids.view(
+                    -1,
+                    effective_num_speculative_tokens,
+                )
                 logits = logits.reshape(
-                    -1, self.num_speculative_tokens, logits.shape[-1]
+                    -1,
+                    effective_num_speculative_tokens,
+                    logits.shape[-1],
                 )
-                speclink_trace_record_draft_features(
-                    draft_token_ids=draft_token_ids,
-                    logits_by_position=[
-                        logits[:, i, :] for i in range(self.num_speculative_tokens)
-                    ],
-                    temperature=sampling_metadata.temperature,
-                    method=self.method,
+                logits_by_position = [
+                    logits[:, i, :]
+                    for i in range(effective_num_speculative_tokens)
+                ]
+                if trace_confidence:
+                    speclink_trace_record_draft_features(
+                        draft_token_ids=draft_token_ids,
+                        logits_by_position=logits_by_position,
+                        temperature=sampling_metadata.temperature,
+                        method=self.method,
+                    )
+                return self._pad_lazy_draft_token_ids(
+                    draft_token_ids,
+                    effective_num_speculative_tokens,
                 )
-                return draft_token_ids
             draft_token_ids = self._greedy_sample(sample_hidden_states)
-            return draft_token_ids.view(-1, self.num_speculative_tokens)
+            draft_token_ids = draft_token_ids.view(
+                -1,
+                effective_num_speculative_tokens,
+            )
+            return self._pad_lazy_draft_token_ids(
+                draft_token_ids,
+                effective_num_speculative_tokens,
+            )
 
         if self.uses_mrope:
             positions = self.mrope_positions[:, token_indices_to_sample]
@@ -576,7 +652,7 @@ class SpecDecodeBaseProposer:
         # to remove the "padding" (i.e. rejected tokens).
         # Only apply this adjustment when we have rejected tokens
         # (i.e., not the first proposal).
-        if self.num_speculative_tokens > 1 and num_rejected_tokens_gpu is not None:
+        if effective_num_speculative_tokens > 1 and num_rejected_tokens_gpu is not None:
             common_attn_metadata.seq_lens -= num_rejected_tokens_gpu
             # Invalidate the CPU-side shadows to avoid H<>D sync.
             common_attn_metadata._seq_lens_cpu = None
@@ -584,7 +660,7 @@ class SpecDecodeBaseProposer:
 
         block_size = self.block_size
         assert block_size > 0, "block_size has not been initialized."
-        for token_index in range(self.num_speculative_tokens - 1):
+        for token_index in range(effective_num_speculative_tokens - 1):
             # Update the inputs.
             # cast to int32 is crucial when eagle model is compiled.
             # tensor.argmax() returns int64 by default.
@@ -693,7 +769,7 @@ class SpecDecodeBaseProposer:
                 draft_token_ids = self._greedy_sample(last_hidden_states[:batch_size])
             draft_token_ids_list.append(draft_token_ids)
 
-        # [batch_size, num_speculative_tokens]
+        # [batch_size, effective_num_speculative_tokens]
         draft_token_ids = torch.stack(draft_token_ids_list, dim=1)
         if trace_confidence:
             speclink_trace_record_draft_features(
@@ -702,7 +778,10 @@ class SpecDecodeBaseProposer:
                 temperature=sampling_metadata.temperature,
                 method=self.method,
             )
-        return draft_token_ids
+        return self._pad_lazy_draft_token_ids(
+            draft_token_ids,
+            effective_num_speculative_tokens,
+        )
 
     def set_inputs_first_pass(
         self,

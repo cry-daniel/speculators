@@ -117,6 +117,12 @@ from vllm.speclink_confidence_trace import (
     end_propose_context as speclink_trace_end_propose_context,
     end_verify_context as speclink_trace_end_verify_context,
 )
+from vllm.smurfs_dynamic import (
+    current_draft_limit as smurfs_dynamic_current_draft_limit,
+    enabled as smurfs_dynamic_enabled,
+    fixed_draft_limit_for_request as smurfs_fixed_draft_limit_for_request,
+    log_fixed_proposal as smurfs_log_fixed_proposal,
+)
 from vllm.tasks import GenerationTask, PoolingTask, SupportedTask
 from vllm.tracing import instrument
 from vllm.utils import length_from_prompt_token_ids_or_embeds
@@ -4638,6 +4644,44 @@ class GPUModelRunner(
         if not self.num_spec_tokens or not self._draft_token_req_ids:
             return None
         draft_token_ids, req_ids = self._get_draft_token_ids_cpu()
+        method = (
+            self.speculative_config.method
+            if self.speculative_config is not None
+            else None
+        )
+        if smurfs_dynamic_enabled(method):
+            fixed_limits = [
+                smurfs_fixed_draft_limit_for_request(
+                    req_id,
+                    self.num_spec_tokens,
+                )
+                for req_id in req_ids
+            ]
+            dynamic_count = sum(limit is None for limit in fixed_limits)
+            dynamic_k = (
+                smurfs_dynamic_current_draft_limit(
+                    self.num_spec_tokens,
+                    active_requests=dynamic_count,
+                    method=method or "",
+                )
+                if dynamic_count else None
+            )
+            fixed_counts: dict[int, int] = {}
+            trimmed_draft_token_ids = []
+            for ids, fixed_k in zip(draft_token_ids, fixed_limits):
+                effective_k = dynamic_k if fixed_k is None else fixed_k
+                effective_k = max(1, min(self.num_spec_tokens, int(effective_k)))
+                if fixed_k is not None:
+                    fixed_counts[effective_k] = fixed_counts.get(effective_k, 0) + 1
+                trimmed_draft_token_ids.append(ids[:effective_k])
+            for fixed_k, active_requests in fixed_counts.items():
+                smurfs_log_fixed_proposal(
+                    configured_max_k=self.num_spec_tokens,
+                    active_requests=active_requests,
+                    effective_k=fixed_k,
+                    method=method or "",
+                )
+            draft_token_ids = trimmed_draft_token_ids
         return DraftTokenIds(req_ids, draft_token_ids)
 
     def _copy_draft_token_ids_to_cpu(

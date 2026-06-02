@@ -1,7 +1,8 @@
 # Speculator Throughput Experiments
 
-This repo is currently set up to benchmark Qwen3-8B with EAGLE3 and P-EAGLE
-speculators through vLLM and GuideLLM.
+This repo is currently set up to benchmark Qwen3-8B with EAGLE3/P-EAGLE and
+Llama-3.1-8B with FastDraft, Smurfs dynamic K, and EAGLE3 through vLLM and
+GuideLLM.
 
 ## Environment
 
@@ -81,6 +82,8 @@ The current local paths are:
 
 - EAGLE3: `/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-eagle3-speculator`
 - P-EAGLE: `/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-peagle-speculator`
+- Llama-3.1-8B base: `/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/llama-3.1-8b-instruct`
+- Llama-3.1-8B FastDraft: `/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/llama-3.1-8b-fastdraft-150m-int8-hf`
 - Llama-3.1-8B EAGLE3: `/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/llama-3.1-8b-eagle3-speculator`
 
 To download the speculator checkpoints again:
@@ -136,6 +139,17 @@ Current local vLLM changes in `speculators/vllm` are Python-only:
   `vllm/v1/core/sched/output.py`, and
   `vllm/v1/worker/gpu_model_runner.py`, gated by
   `SPECLINK_CV_ENABLE=1`
+- Smurfs dynamic K for FastDraft is implemented inside this repo's vendored
+  vLLM in
+  `vllm/smurfs_dynamic.py`,
+  `vllm/v1/spec_decode/llm_base_proposer.py`, and
+  `vllm/v1/core/sched/scheduler.py`, gated by
+  `SPECLINK_SMURFS_DYNAMIC_ENABLE=1`
+
+The old standalone `Others/Smurfs` tree has been removed and is not used for
+current runs. Do not route Smurfs benchmarks through a standalone Smurfs
+checkout or a separate Smurfs conda environment. Use the `spec` environment and
+the vendored `speculators/vllm` install.
 
 Install or refresh vLLM from the repo root with editable mode. The current
 machine uses PyTorch `2.11.0+cu130`, so point the vLLM build at the conda
@@ -333,6 +347,49 @@ Expected output files in each output directory:
 - `guidellm_output.log`
 - `guidellm_results.json`
 - `acceptance_analysis.txt`
+
+## Llama FastDraft/Smurfs Matrix
+
+For the Llama-3.1-8B comparison of AR, FastDraft, Smurfs dynamic K, and EAGLE3,
+use:
+
+```bash
+cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
+conda run -n spec python ./scripts/run_llama31_vllm_fastdraft_smurfs_eagle3_matrix.py
+```
+
+The matrix script compares:
+
+- `vllm_ar`
+- `vllm_fastdraft`
+- `smurfs_fastdraft`
+- `vllm_eagle3`
+
+Defaults:
+
+- datasets: `math_reasoning,mtbench,gsm8k,humaneval`
+- client-side batch/concurrency: `8,16,32,64`
+- `max_tokens=2048`
+- FastDraft K=4
+- EAGLE3 K=4
+- Smurfs initial K=4, dynamic max K=12 below batch size 32 and 8 otherwise
+
+Final outputs go to:
+
+```text
+examples/evaluate/eval-guidellm/results_final/llama31_vllm_fastdraft_smurfs_eagle3_matrix_2048_full_TIMESTAMP/
+```
+
+Intermediate server logs and per-run work files go to:
+
+```text
+examples/evaluate/eval-guidellm/temp/llama31_vllm_fastdraft_smurfs_eagle3_matrix_2048_full_TIMESTAMP/
+```
+
+For Smurfs runs, the server writes the live dynamic-K event log to each run
+directory as `smurfs_dynamic_k.jsonl` via `SPECLINK_SMURFS_DYNAMIC_OUT`. The
+WebUI Smurfs mode in `vllm_spec_webui.py` reads that log through
+`--smurfs-k-log` and displays the current K.
 
 ## Motivation Breakdown
 

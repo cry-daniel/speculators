@@ -138,6 +138,18 @@ if TYPE_CHECKING:
     VLLM_MLA_DISABLE: bool = False
     VLLM_RAY_PER_WORKER_GPUS: float = 1.0
     VLLM_RAY_BUNDLE_INDICES: str = ""
+    SPECLINK_SMURFS_DYNAMIC_ENABLE: str = "0"
+    SPECLINK_SMURFS_DYNAMIC_METHODS: str = ""
+    SPECLINK_SMURFS_DYNAMIC_INITIAL_K: str = ""
+    SPECLINK_SMURFS_DYNAMIC_MIN_K: str = ""
+    SPECLINK_SMURFS_DYNAMIC_MAX_K: str = ""
+    SPECLINK_SMURFS_DYNAMIC_UPDATE_DRAFT_TOKENS: str = ""
+    SPECLINK_SMURFS_DYNAMIC_UP_ACCEPTANCE: str = ""
+    SPECLINK_SMURFS_DYNAMIC_DOWN_ACCEPTANCE: str = ""
+    SPECLINK_SMURFS_DYNAMIC_UP_FULL_PREFIX: str = ""
+    SPECLINK_SMURFS_DYNAMIC_DOWN_AVG_ACCEPT: str = ""
+    SPECLINK_SMURFS_DYNAMIC_MIN_FEEDBACK_BEFORE_DOWN: str = ""
+    SPECLINK_SMURFS_DYNAMIC_OUT: str = ""
     VLLM_CUDART_SO_PATH: str | None = None
     VLLM_DP_RANK: int = 0
     VLLM_DP_RANK_LOCAL: int = -1
@@ -500,6 +512,43 @@ def get_env_or_set_default(
 logger = logging.getLogger(__name__)
 
 environment_variables: dict[str, Callable[[], Any]] = {
+    # ================== SpecLink/Smurfs Experiment Env Vars ==================
+    "SPECLINK_SMURFS_DYNAMIC_ENABLE": lambda: os.getenv(
+        "SPECLINK_SMURFS_DYNAMIC_ENABLE", "0"
+    ),
+    "SPECLINK_SMURFS_DYNAMIC_METHODS": lambda: os.getenv(
+        "SPECLINK_SMURFS_DYNAMIC_METHODS", ""
+    ),
+    "SPECLINK_SMURFS_DYNAMIC_INITIAL_K": lambda: os.getenv(
+        "SPECLINK_SMURFS_DYNAMIC_INITIAL_K", ""
+    ),
+    "SPECLINK_SMURFS_DYNAMIC_MIN_K": lambda: os.getenv(
+        "SPECLINK_SMURFS_DYNAMIC_MIN_K", ""
+    ),
+    "SPECLINK_SMURFS_DYNAMIC_MAX_K": lambda: os.getenv(
+        "SPECLINK_SMURFS_DYNAMIC_MAX_K", ""
+    ),
+    "SPECLINK_SMURFS_DYNAMIC_UPDATE_DRAFT_TOKENS": lambda: os.getenv(
+        "SPECLINK_SMURFS_DYNAMIC_UPDATE_DRAFT_TOKENS", ""
+    ),
+    "SPECLINK_SMURFS_DYNAMIC_UP_ACCEPTANCE": lambda: os.getenv(
+        "SPECLINK_SMURFS_DYNAMIC_UP_ACCEPTANCE", ""
+    ),
+    "SPECLINK_SMURFS_DYNAMIC_DOWN_ACCEPTANCE": lambda: os.getenv(
+        "SPECLINK_SMURFS_DYNAMIC_DOWN_ACCEPTANCE", ""
+    ),
+    "SPECLINK_SMURFS_DYNAMIC_UP_FULL_PREFIX": lambda: os.getenv(
+        "SPECLINK_SMURFS_DYNAMIC_UP_FULL_PREFIX", ""
+    ),
+    "SPECLINK_SMURFS_DYNAMIC_DOWN_AVG_ACCEPT": lambda: os.getenv(
+        "SPECLINK_SMURFS_DYNAMIC_DOWN_AVG_ACCEPT", ""
+    ),
+    "SPECLINK_SMURFS_DYNAMIC_MIN_FEEDBACK_BEFORE_DOWN": lambda: os.getenv(
+        "SPECLINK_SMURFS_DYNAMIC_MIN_FEEDBACK_BEFORE_DOWN", ""
+    ),
+    "SPECLINK_SMURFS_DYNAMIC_OUT": lambda: os.getenv(
+        "SPECLINK_SMURFS_DYNAMIC_OUT", ""
+    ),
     # ================== Installation Time Env Vars ==================
     # Target device of vLLM, supporting [cuda (by default),
     # rocm, cpu]
