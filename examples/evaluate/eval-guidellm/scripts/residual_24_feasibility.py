@@ -2390,13 +2390,13 @@ def write_summary_md(
     smoke_cmd = (
         "cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators\n\n"
         "conda run -n spec python -u \\\n"
-        "  examples/evaluate/eval-guidellm/scripts/residual_24_feasibility.py quality \\\n"
+        "  examples/evaluate/eval-guidellm/scripts/evaluate_structured_24_quality.py \\\n"
         "  --smoke \\\n"
         "  --output-root examples/evaluate/eval-guidellm/results/structured_24_quality_smoke"
     )
     full_cmd = (
         "conda run -n spec python -u \\\n"
-        "  examples/evaluate/eval-guidellm/scripts/residual_24_feasibility.py quality \\\n"
+        "  examples/evaluate/eval-guidellm/scripts/evaluate_structured_24_quality.py \\\n"
         "  --models qwen3_8b,llama3_1_8b \\\n"
         "  --mask-scopes none,attn,ffn,all \\\n"
         "  --datasets gsm8k,humaneval,math_reasoning,mtbench,dolly \\\n"
@@ -2417,8 +2417,8 @@ def write_summary_md(
             if isinstance(argv, list) and argv:
                 actual_cmd = " ".join(shlex.quote(str(part)) for part in argv)
                 actual_cmd = actual_cmd.replace(
-                    "examples/evaluate/eval-guidellm/scripts/evaluate_structured_24_quality.py",
                     "examples/evaluate/eval-guidellm/scripts/residual_24_feasibility.py quality",
+                    "examples/evaluate/eval-guidellm/scripts/evaluate_structured_24_quality.py",
                 )
         except Exception:  # noqa: BLE001
             actual_cmd = ""
@@ -2691,10 +2691,10 @@ def build_parser() -> argparse.ArgumentParser:
             "nn.Linear weights. This uses Transformers/PyTorch only; it does "
             "not use vLLM and does not claim real sparse-kernel speedup.\n\n"
             "Smoke example:\n"
-            "  conda run -n spec python scripts/residual_24_feasibility.py quality "
+            "  conda run -n spec python scripts/evaluate_structured_24_quality.py "
             "--smoke --output-root results/structured_24_quality_smoke\n\n"
             "Full example:\n"
-            "  conda run -n spec python scripts/residual_24_feasibility.py quality "
+            "  conda run -n spec python scripts/evaluate_structured_24_quality.py "
             "--models qwen3_8b,llama3_1_8b --mask-scopes none,attn,ffn,all "
             "--datasets gsm8k,humaneval,math_reasoning,mtbench,dolly "
             "--gsm8k-num-examples 128 --humaneval-num-examples 64 "
