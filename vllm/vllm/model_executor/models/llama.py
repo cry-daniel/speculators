@@ -57,6 +57,7 @@ from vllm.model_executor.model_loader.weight_utils import (
     maybe_remap_kv_scale_name,
 )
 from vllm.sequence import IntermediateTensors
+from vllm.speclink_breakdown import verify_detail_enabled, verify_timer
 from vllm.v1.attention.backend import AttentionType
 
 from .adapters import as_embedding_model, as_seq_cls_model
@@ -76,6 +77,8 @@ from .utils import (
     make_layers,
     maybe_prefix,
 )
+
+_SPECLINK_VERIFY_DETAIL = verify_detail_enabled()
 
 
 class LlamaMLP(nn.Module):
@@ -225,11 +228,21 @@ class LlamaAttention(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states)
+        if _SPECLINK_VERIFY_DETAIL:
+            with verify_timer("qkv_proj"):
+                qkv, _ = self.qkv_proj(hidden_states)
+        else:
+            qkv, _ = self.qkv_proj(hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
-        q, k = self.rotary_emb(positions, q, k)
-        attn_output = self.attn(q, k, v)
-        output, _ = self.o_proj(attn_output)
+        if _SPECLINK_VERIFY_DETAIL:
+            with verify_timer("attention"):
+                q, k = self.rotary_emb(positions, q, k)
+                attn_output = self.attn(q, k, v)
+                output, _ = self.o_proj(attn_output)
+        else:
+            q, k = self.rotary_emb(positions, q, k)
+            attn_output = self.attn(q, k, v)
+            output, _ = self.o_proj(attn_output)
         return output
 
     def _init_rotary_emb(
@@ -328,8 +341,17 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states = self.self_attn(positions=positions, hidden_states=hidden_states)
 
         # Fully Connected
-        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-        hidden_states = self.mlp(hidden_states)
+        if _SPECLINK_VERIFY_DETAIL:
+            with verify_timer("ffn"):
+                hidden_states, residual = self.post_attention_layernorm(
+                    hidden_states, residual
+                )
+                hidden_states = self.mlp(hidden_states)
+        else:
+            hidden_states, residual = self.post_attention_layernorm(
+                hidden_states, residual
+            )
+            hidden_states = self.mlp(hidden_states)
         return hidden_states, residual
 
     def get_quant_config(self, vllm_config: VllmConfig) -> QuantizationConfig | None:
