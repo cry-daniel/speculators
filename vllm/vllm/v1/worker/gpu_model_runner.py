@@ -117,6 +117,14 @@ from vllm.speclink_confidence_trace import (
     end_propose_context as speclink_trace_end_propose_context,
     end_verify_context as speclink_trace_end_verify_context,
 )
+from vllm.speclink_structured_24 import apply_structured_24_from_env
+from vllm.speclink_token_dense import (
+    begin_propose_context as speclink_token_dense_begin_propose_context,
+    begin_verify_context as speclink_token_dense_begin_verify_context,
+    build_verify_dense_mask as speclink_token_dense_build_verify_dense_mask,
+    end_propose_context as speclink_token_dense_end_propose_context,
+    end_verify_context as speclink_token_dense_end_verify_context,
+)
 from vllm.smurfs_dynamic import (
     current_draft_limit as smurfs_dynamic_current_draft_limit,
     enabled as smurfs_dynamic_enabled,
@@ -1921,10 +1929,11 @@ class GPUModelRunner(
     ) -> tuple[
         torch.Tensor,
         SpecDecodeMetadata | None,
+        torch.Tensor | None,
     ]:
         """
         :return: tuple[
-            logits_indices, spec_decode_metadata,
+            logits_indices, spec_decode_metadata, token_dense_mask,
         ]
         """
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
@@ -2171,6 +2180,7 @@ class GPUModelRunner(
             target.gpu[:, :total_num_scheduled_tokens] += drift
 
         use_spec_decode = len(scheduler_output.scheduled_spec_decode_tokens) > 0
+        token_dense_mask = None
         if not use_spec_decode:
             # NOTE(woosuk): Due to chunked prefills, the batch may contain
             # partial requests. While we should not sample any token
@@ -2200,6 +2210,14 @@ class GPUModelRunner(
                     >= self.input_batch.num_prompt_tokens[req_idx]
                 ):
                     num_decode_draft_tokens[req_idx] = draft_len
+            token_dense_mask = speclink_token_dense_build_verify_dense_mask(
+                req_ids=self.input_batch.req_ids,
+                num_scheduled_tokens=num_scheduled_tokens,
+                num_draft_tokens=num_draft_tokens,
+                cu_num_scheduled_tokens=cu_num_tokens,
+                total_num_scheduled_tokens=total_num_scheduled_tokens,
+                device=self.device,
+            )
             spec_decode_metadata = self._calc_spec_decode_metadata(
                 num_draft_tokens, cu_num_tokens
             )
@@ -2223,6 +2241,7 @@ class GPUModelRunner(
         return (
             logits_indices,
             spec_decode_metadata,
+            token_dense_mask,
         )
 
     def _build_attention_metadata(
@@ -4015,7 +4034,7 @@ class GPUModelRunner(
             max_num_scheduled_tokens = int(num_scheduled_tokens_np.max())
             num_tokens_unpadded = scheduler_output.total_num_scheduled_tokens
 
-            logits_indices, spec_decode_metadata = self._prepare_inputs(
+            logits_indices, spec_decode_metadata, token_dense_mask = self._prepare_inputs(
                 scheduler_output,
                 num_scheduled_tokens_np,
             )
@@ -4187,6 +4206,9 @@ class GPUModelRunner(
         _speclink_breakdown_sync()
         speclink_verify_start = _speclink_breakdown_now()
         speclink_verify_detail, speclink_verify_detail_token = begin_verify_detail()
+        speclink_token_dense_verify_token = speclink_token_dense_begin_verify_context(
+            token_dense_mask
+        )
         try:
             with (
                 set_forward_context(
@@ -4214,6 +4236,7 @@ class GPUModelRunner(
                     **model_kwargs,
                 )
         finally:
+            speclink_token_dense_end_verify_context(speclink_token_dense_verify_token)
             end_verify_detail(speclink_verify_detail_token)
 
         with record_function_or_nullcontext("gpu_model_runner: postprocess"):
@@ -5003,6 +5026,7 @@ class GPUModelRunner(
                 mm_embed_inputs = None
 
             trace_token = None
+            token_dense_token = None
             try:
                 req_ids = self.input_batch.req_ids.copy()
                 num_reqs = self.input_batch.num_reqs
@@ -5035,6 +5059,15 @@ class GPUModelRunner(
                     num_spec_tokens=self.num_spec_tokens or 0,
                     method=spec_config.method,
                 )
+                token_dense_token = speclink_token_dense_begin_propose_context(
+                    req_ids=req_ids,
+                    prompt_lens=prompt_lens,
+                    generated_lens=generated_lens,
+                    active_requests=num_reqs,
+                    batch_size=num_reqs,
+                    num_spec_tokens=self.num_spec_tokens or 0,
+                    method=spec_config.method,
+                )
                 draft_token_ids = self.drafter.propose(
                     target_token_ids=target_token_ids,
                     target_positions=target_positions,
@@ -5048,6 +5081,7 @@ class GPUModelRunner(
                     slot_mappings=slot_mappings,
                 )
             finally:
+                speclink_token_dense_end_propose_context(token_dense_token)
                 speclink_trace_end_propose_context(trace_token)
 
         return draft_token_ids
@@ -5092,6 +5126,11 @@ class GPUModelRunner(
                     self.model = self.load_lora_model(
                         self.model, self.vllm_config, self.device
                     )
+                apply_structured_24_from_env(
+                    self.model,
+                    logger=logger,
+                    context="v1_gpu_model_runner_target",
+                )
                 if hasattr(self, "drafter"):
                     logger.info_once("Loading drafter model...")
                     self.drafter.load_model(self.model)

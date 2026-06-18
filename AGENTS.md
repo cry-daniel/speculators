@@ -275,6 +275,221 @@ RedHatAI/speculator_benchmarks:math_reasoning.jsonl
 `scripts/run_guidellm.sh` strips the `path=` prefix emitted by this HF CLI
 version before searching downloaded files.
 
+## Structured 2:4 C4 Calibration
+
+Structured 2:4 quality and layer-sensitivity experiments use a reusable C4
+activation-RMS cache for activation-aware masking. Do not implicitly calibrate
+from the evaluation datasets. The fixed prompt sample is:
+
+```text
+/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm/data/c4_calibration/c4_calibration_512_seed42.jsonl
+```
+
+Prepare or refresh the fixed C4 prompt sample with:
+
+```bash
+cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators
+conda run -n spec python examples/evaluate/eval-guidellm/scripts/prepare_c4_calibration_dataset.py \
+  --num-examples 512 \
+  --seed 42 \
+  --shuffle-buffer 10000 \
+  --output examples/evaluate/eval-guidellm/data/c4_calibration/c4_calibration_512_seed42.jsonl \
+  --force
+```
+
+Run model-specific calibration once, then reuse the generated RMS cache for
+later experiments:
+
+```bash
+MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
+  examples/evaluate/eval-guidellm/scripts/residual_24_feasibility.py calibrate-24 \
+  --models qwen3_8b,llama3_1_8b \
+  --calibration-prompts examples/evaluate/eval-guidellm/data/c4_calibration/c4_calibration_512_seed42.jsonl \
+  --calibration-max-seq-len 512 \
+  --calibration-batch-size 1 \
+  --dtype bf16 \
+  --output-root examples/evaluate/eval-guidellm/data/c4_calibration/activation_rms/c4_512_seed42_bf16_max512
+```
+
+The default cache root is:
+
+```text
+/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm/data/c4_calibration/activation_rms/c4_512_seed42_bf16_max512
+```
+
+For Wanda++-style accuracy recovery experiments, build compact reusable mask
+caches from the same fixed C4 prompt sample. This path does not rewrite model
+checkpoints. It stores 2:4 masks and optional output-row scales, then vLLM
+applies them to the TLM/base model at load time.
+
+```bash
+cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators
+MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
+  examples/evaluate/eval-guidellm/scripts/prepare_wandapp_structured_24_cache.py \
+  --models qwen3_8b,llama3_1_8b \
+  --methods wandapp_rgs,wandapp_ro \
+  --calibration-prompts examples/evaluate/eval-guidellm/data/c4_calibration/c4_calibration_512_seed42.jsonl \
+  --num-prompts 128 \
+  --max-seq-len 128 \
+  --max-tokens-per-module 256 \
+  --output-root examples/evaluate/eval-guidellm/data/c4_calibration/wandapp_masks
+```
+
+The default Wanda++-style cache root is:
+
+```text
+/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm/data/c4_calibration/wandapp_masks
+```
+
+The two cache methods are:
+
+- `wandapp_rgs`: C4 input activations plus a local output-gradient sensitivity
+  multiplier select the 2 kept weights in every 4-wide input group.
+- `wandapp_ro`: uses the same mask and adds an output-row least-squares scale.
+  This is an RO-lite correction cache, not a full block-level Wanda++ optimizer
+  and not a saved sparse checkpoint.
+
+Run the accuracy-first speculative serving comparison with:
+
+```bash
+cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators
+MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
+  examples/evaluate/eval-guidellm/scripts/run_wandapp_accuracy.py \
+  --models qwen3_8b,llama3_1_8b \
+  --methods activation_aware,token_dense_t07,wandapp_rgs,wandapp_ro \
+  --datasets gsm8k,math_reasoning \
+  --gsm8k-num-examples 64 \
+  --math-num-examples 64 \
+  --accuracy-max-tokens 512 \
+  --accuracy-concurrency 8 \
+  --max-num-seqs 8 \
+  --num-spec-tokens 8 \
+  --cache-root examples/evaluate/eval-guidellm/data/c4_calibration/wandapp_masks \
+  --output-root examples/evaluate/eval-guidellm/results/structured_24_wandapp_accuracy_TIMESTAMP
+```
+
+`token_dense_tXX` is the current token-level routing experiment. It keeps the
+TLM/base weights dense, attaches the same activation-aware 2:4 masks to Llama
+target linears, records DLM `draft_selected_prob`, and during target
+verification routes only low-confidence draft-token rows through the 2:4
+masked weight. High-confidence draft rows, prefill rows, non-draft rows,
+missing-score rows, and verifier bonus rows stay dense. The label threshold is
+decimal shorthand: `token_dense_t07` means threshold 0.7, `token_dense_t05`
+means 0.5, and `token_dense_t90` also means 0.90. This mode forces
+`--enforce-eager` because the token mask changes per decoding step.
+
+To test the low-overhead sensitive-layer preservation path, append
+`_keep_first_N` to a method name. For example, the command below keeps the
+first two transformer layers dense and applies the selected 2:4 method to all
+remaining target-model layers:
+
+```bash
+MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
+  examples/evaluate/eval-guidellm/scripts/run_wandapp_accuracy.py \
+  --methods activation_aware,wandapp_rgs,wandapp_ro,activation_aware_keep_first_2,wandapp_rgs_keep_first_2,wandapp_ro_keep_first_2 \
+  --cache-root examples/evaluate/eval-guidellm/data/c4_calibration/wandapp_masks \
+  --output-root examples/evaluate/eval-guidellm/results/structured_24_wandapp_accuracy_TIMESTAMP \
+  --resume
+```
+
+Smoke and sanity outputs for this path should go under `results.bak/`, for
+example:
+
+```bash
+MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
+  examples/evaluate/eval-guidellm/scripts/run_wandapp_accuracy.py --smoke
+```
+
+`quality` and `layer-sensitivity` load this cache by default when they need
+activation-aware RMS. If the cache is missing, generate it with `calibrate-24`
+instead of falling back to evaluation prompts. A standard C4-calibrated layer
+sensitivity run is:
+
+```bash
+MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
+  examples/evaluate/eval-guidellm/scripts/residual_24_feasibility.py layer-sensitivity \
+  --models qwen3_8b,llama3_1_8b \
+  --datasets mtbench,dolly,gsm8k,math_reasoning \
+  --mtbench-num-examples 40 \
+  --dolly-num-examples 64 \
+  --gsm8k-num-examples 64 \
+  --math-num-examples 64 \
+  --generation-batch-size 4 \
+  --dtype bf16 \
+  --output-root examples/evaluate/eval-guidellm/results/structured_24_layer_sensitivity_qwen_llama_c4calib_TIMESTAMP
+```
+
+The command above is an offline Transformers quality check. For current
+speculative-inference experiments, use the vLLM/EAGLE3 runner below instead.
+It applies 2:4 only to the TLM/base large model at vLLM model-load time; the
+EAGLE3 drafter/speculator remains dense. Accuracy is generated through vLLM
+speculative decoding, while PPL is dense-vs-sparse TLM reference loss using the
+same mask policy.
+
+```bash
+cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators
+MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
+  examples/evaluate/eval-guidellm/scripts/run_structured_24_spec_quality.py \
+  --models qwen3_8b,llama3_1_8b \
+  --datasets mtbench,dolly,gsm8k,math_reasoning \
+  --num-spec-tokens 8 \
+  --mtbench-num-examples 40 \
+  --dolly-num-examples 64 \
+  --gsm8k-num-examples 64 \
+  --math-num-examples 64 \
+  --accuracy-concurrency 8 \
+  --max-num-seqs 8 \
+  --output-root examples/evaluate/eval-guidellm/results/structured_24_spec_tlm_eagle3_k8_TIMESTAMP
+```
+
+Useful variants:
+
+```bash
+# Smoke and sanity artifacts go under results.bak/.
+MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
+  examples/evaluate/eval-guidellm/scripts/run_structured_24_spec_quality.py --smoke
+
+# Resume an interrupted full run.
+MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
+  examples/evaluate/eval-guidellm/scripts/run_structured_24_spec_quality.py \
+  --output-root examples/evaluate/eval-guidellm/results/structured_24_spec_tlm_eagle3_k8_TIMESTAMP \
+  --resume
+
+# Re-run only the all-sparse and first/last dense-keep comparison.
+MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
+  examples/evaluate/eval-guidellm/scripts/run_structured_24_spec_quality.py \
+  --skip-layer-sensitivity \
+  --output-root examples/evaluate/eval-guidellm/results/structured_24_spec_tlm_eagle3_k8_dense_keep_TIMESTAMP
+```
+
+The vLLM hook is disabled by default and is controlled by:
+
+```text
+SPECLINK_STRUCTURED_24_ENABLE=1
+SPECLINK_STRUCTURED_24_MODEL_LABEL=qwen3_8b|llama3_1_8b
+SPECLINK_STRUCTURED_24_CALIBRATION_CACHE_ROOT=/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm/data/c4_calibration/activation_rms/c4_512_seed42_bf16_max512
+SPECLINK_STRUCTURED_24_POLICY=dense|single_layer|all_sparse|keep_first|keep_last|keep_first_last
+SPECLINK_STRUCTURED_24_LAYER_INDEX=0
+SPECLINK_STRUCTURED_24_KEEP_N=1
+SPECLINK_STRUCTURED_24_STATS_PATH=/path/to/vllm_structured_24_stats.json
+SPECLINK_STRUCTURED_24_MASK_CACHE=/path/to/qwen3_8b_wandapp_ro.pt
+SPECLINK_STRUCTURED_24_CACHE_STRICT=1
+SPECLINK_TOKEN_DENSE_ENABLE=1
+SPECLINK_TOKEN_DENSE_MODE=high_confidence_dense
+SPECLINK_TOKEN_DENSE_THRESHOLD=0.7
+SPECLINK_TOKEN_DENSE_STATS_PATH=/path/to/token_dense_stats.jsonl
+```
+
+Final files from the speculative runner:
+
+- `structured_24_spec_quality.csv`: all dense-vs-sparse PPL and ACC rows.
+- `layer_sensitivity.csv`: one-sparse-layer rows.
+- `dense_keep_compare.csv`: all-sparse, keep-first, keep-last, and
+  keep-first-last rows.
+- `figures/layer_sensitivity_spec.png` and `figures/dense_keep_spec.png`.
+- `runs/*/*/vllm_structured_24_stats.json`: vLLM-side proof that only TLM
+  modules were masked.
+
 ## Running Benchmarks
 
 Run commands from:

@@ -59,6 +59,7 @@ from vllm.model_executor.model_loader.weight_utils import (
     maybe_remap_kv_scale_name,
 )
 from vllm.sequence import IntermediateTensors
+from vllm.speclink_token_dense import mixed_sparse_linear_output
 from vllm.transformers_utils.config import is_interleaved, set_default_rope_theta
 from vllm.v1.attention.backend import AttentionType
 
@@ -112,9 +113,10 @@ class Qwen2MLP(nn.Module):
 
     def forward(self, x):
         gate_up, _ = self.gate_up_proj(x)
+        gate_up = mixed_sparse_linear_output(self.gate_up_proj, x, gate_up)
         x = self.act_fn(gate_up)
-        x, _ = self.down_proj(x)
-        return x
+        down, _ = self.down_proj(x)
+        return mixed_sparse_linear_output(self.down_proj, x, down)
 
 
 class Qwen2Attention(nn.Module):

@@ -30,6 +30,10 @@ from vllm.speclink_confidence_trace import (
     enabled as speclink_trace_enabled,
     record_draft_features as speclink_trace_record_draft_features,
 )
+from vllm.speclink_token_dense import (
+    enabled as speclink_token_dense_enabled,
+    record_draft_scores as speclink_token_dense_record_draft_scores,
+)
 from vllm.smurfs_dynamic import (
     current_draft_limit as smurfs_dynamic_current_draft_limit,
     enabled as smurfs_dynamic_enabled,
@@ -453,6 +457,8 @@ class SpecDecodeBaseProposer:
     ) -> torch.Tensor:
         batch_size = common_attn_metadata.batch_size()
         trace_confidence = speclink_trace_enabled()
+        token_dense = speclink_token_dense_enabled()
+        need_draft_scores = trace_confidence or token_dense
         smurfs_dynamic = (
             smurfs_dynamic_enabled(self.method)
             and self.method != "draft_model"
@@ -553,7 +559,7 @@ class SpecDecodeBaseProposer:
 
         # Early exit if there is only one draft token to be generated.
         if effective_num_speculative_tokens == 1 or self.parallel_drafting:
-            if trace_confidence:
+            if need_draft_scores:
                 logits = self.model.compute_logits(sample_hidden_states)
                 if self.use_local_argmax_reduction:
                     draft_token_ids = self.model.get_top_tokens(sample_hidden_states)
@@ -574,6 +580,13 @@ class SpecDecodeBaseProposer:
                 ]
                 if trace_confidence:
                     speclink_trace_record_draft_features(
+                        draft_token_ids=draft_token_ids,
+                        logits_by_position=logits_by_position,
+                        temperature=sampling_metadata.temperature,
+                        method=self.method,
+                    )
+                if token_dense:
+                    speclink_token_dense_record_draft_scores(
                         draft_token_ids=draft_token_ids,
                         logits_by_position=logits_by_position,
                         temperature=sampling_metadata.temperature,
@@ -614,7 +627,7 @@ class SpecDecodeBaseProposer:
             return torch.cat(draft_token_ids_list, dim=1)
 
         draft_logits_by_position: list[torch.Tensor] = []
-        if trace_confidence:
+        if need_draft_scores:
             logits = self.model.compute_logits(sample_hidden_states)
             draft_logits_by_position.append(logits)
             if self.use_local_argmax_reduction:
@@ -756,7 +769,7 @@ class SpecDecodeBaseProposer:
                     last_hidden_states, hidden_states = ret_hidden_states
 
             hidden_states = hidden_states[:batch_size]
-            if trace_confidence:
+            if need_draft_scores:
                 logits = self.model.compute_logits(last_hidden_states[:batch_size])
                 draft_logits_by_position.append(logits)
                 if self.use_local_argmax_reduction:
@@ -773,6 +786,13 @@ class SpecDecodeBaseProposer:
         draft_token_ids = torch.stack(draft_token_ids_list, dim=1)
         if trace_confidence:
             speclink_trace_record_draft_features(
+                draft_token_ids=draft_token_ids,
+                logits_by_position=draft_logits_by_position,
+                temperature=sampling_metadata.temperature,
+                method=self.method,
+            )
+        if token_dense:
+            speclink_token_dense_record_draft_scores(
                 draft_token_ids=draft_token_ids,
                 logits_by_position=draft_logits_by_position,
                 temperature=sampling_metadata.temperature,

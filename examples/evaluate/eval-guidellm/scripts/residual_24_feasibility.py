@@ -1155,10 +1155,20 @@ QUALITY_SCRIPT_PATH = Path(__file__).resolve()
 QUALITY_EVAL_ROOT = QUALITY_SCRIPT_PATH.parents[1]
 QUALITY_DATA_ROOT = QUALITY_EVAL_ROOT / "data"
 QUALITY_RESULTS_ROOT = QUALITY_EVAL_ROOT / "results"
+C4_CALIBRATION_ROOT = QUALITY_DATA_ROOT / "c4_calibration"
+DEFAULT_C4_CALIBRATION_PROMPTS = C4_CALIBRATION_ROOT / "c4_calibration_512_seed42.jsonl"
+DEFAULT_C4_CALIBRATION_CACHE_ROOT = (
+    C4_CALIBRATION_ROOT / "activation_rms" / "c4_512_seed42_bf16_max512"
+)
 
 QUALITY_DEFAULT_MODELS = {
     "qwen3_8b": "Qwen/Qwen3-8B",
     "llama3_1_8b": "meta-llama/Llama-3.1-8B-Instruct",
+}
+
+LAYER_SENSITIVITY_DEFAULT_MODELS = {
+    "qwen3_8b": "/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b",
+    "llama3_1_8b": "/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/llama-3.1-8b-instruct",
 }
 
 QUALITY_MASK_TARGETS = {
@@ -1172,6 +1182,8 @@ QUALITY_CSV_FIELDS = [
     "model_label",
     "model_id",
     "mask_scope",
+    "mask_method",
+    "dense_keep_policy",
     "dataset",
     "metric_name",
     "metric_type",
@@ -1185,9 +1197,36 @@ QUALITY_CSV_FIELDS = [
     "pass_at_1_available",
     "dtype",
     "actual_sparsity",
+    "effective_sparse_fraction",
+    "dense_keep_compute_fraction_est",
+    "dense_keep_weight_count",
     "zeroed_weight_count",
     "total_masked_weight_count",
     "skipped",
+    "failed",
+    "error",
+]
+
+LAYER_SENSITIVITY_CSV_FIELDS = [
+    "model_label",
+    "model_id",
+    "layer_index",
+    "dataset",
+    "metric_name",
+    "metric_type",
+    "dense_metric_value",
+    "layer_metric_value",
+    "delta_vs_dense",
+    "ratio_vs_dense",
+    "accuracy_drop",
+    "num_examples",
+    "ppl_mode",
+    "dtype",
+    "mask_method",
+    "calibration_num_examples",
+    "zeroed_weight_count",
+    "total_masked_weight_count",
+    "actual_sparsity",
     "failed",
     "error",
 ]
@@ -1337,44 +1376,284 @@ def module_is_skipped(name: str, skip_lm_head: bool, skip_embeddings: bool) -> b
     return False
 
 
+def layer_index_from_module_name(name: str) -> int | None:
+    match = re.search(r"\.layers\.(\d+)\.", name)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def iter_target_linear_modules(
+    model: Any,
+    target_modules: tuple[str, ...],
+    *,
+    skip_lm_head: bool = True,
+    skip_embeddings: bool = True,
+) -> list[tuple[str, Any, int, int, int]]:
+    target_set = set(target_modules)
+    out: list[tuple[str, Any, int, int, int]] = []
+    for name, module in model.named_modules():
+        if not isinstance(module, nn.Linear):
+            continue
+        leaf = name.rsplit(".", 1)[-1]
+        if leaf not in target_set:
+            continue
+        if module_is_skipped(name, skip_lm_head, skip_embeddings):
+            continue
+        weight = module.weight
+        if weight.ndim != 2:
+            continue
+        out_features, in_features = weight.shape
+        usable_in = (in_features // 4) * 4
+        if usable_in == 0:
+            continue
+        out.append((name, module, int(out_features), int(in_features), int(usable_in)))
+    return out
+
+
+def compute_major_linear_weight_count(model: Any) -> int:
+    return sum(
+        out_features * usable_in
+        for _, _, out_features, _, usable_in in iter_target_linear_modules(
+            model,
+            QUALITY_MASK_TARGETS["all"],
+            skip_lm_head=True,
+            skip_embeddings=True,
+        )
+    )
+
+
+def module_error_proxy(
+    weight: Any,
+    usable_in: int,
+    *,
+    mask_method: str,
+    activation_scale: Any | None,
+) -> float:
+    out_features = weight.shape[0]
+    view = weight[:, :usable_in].detach().float().view(out_features, usable_in // 4, 4)
+    score = view.abs()
+    if mask_method == "activation_aware" and activation_scale is not None:
+        scale = activation_scale[:usable_in].to(device=weight.device, dtype=score.dtype)
+        score = score * scale.view(1, usable_in // 4, 4)
+        scale_sq = scale.pow(2).view(1, usable_in // 4, 4)
+    elif activation_scale is not None:
+        scale = activation_scale[:usable_in].to(device=weight.device, dtype=score.dtype)
+        scale_sq = scale.pow(2).view(1, usable_in // 4, 4)
+    else:
+        scale_sq = torch.ones((1, usable_in // 4, 4), device=weight.device, dtype=score.dtype)
+    keep_idx = score.topk(k=2, dim=-1, largest=True, sorted=False).indices
+    keep = torch.zeros_like(score, dtype=torch.bool)
+    keep.scatter_(-1, keep_idx, True)
+    removed = ~keep
+    return float((view.pow(2) * scale_sq * removed).sum().item())
+
+
+def collect_dense_keep_candidates(
+    model: Any,
+    target_modules: tuple[str, ...],
+    *,
+    mask_method: str,
+    activation_scales: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for name, module, out_features, in_features, usable_in in iter_target_linear_modules(
+        model,
+        target_modules,
+        skip_lm_head=True,
+        skip_embeddings=True,
+    ):
+        weight_count = int(out_features * usable_in)
+        error_proxy = module_error_proxy(
+            module.weight,
+            usable_in,
+            mask_method=mask_method,
+            activation_scale=(activation_scales or {}).get(name),
+        )
+        candidates.append(
+            {
+                "module": name,
+                "leaf": name.rsplit(".", 1)[-1],
+                "layer": layer_index_from_module_name(name),
+                "weight_count": weight_count,
+                "error_proxy": error_proxy,
+                "error_per_weight": error_proxy / weight_count if weight_count else 0.0,
+            }
+        )
+    return candidates
+
+
+def select_dense_keep_modules(
+    model: Any,
+    target_modules: tuple[str, ...],
+    *,
+    policy: str,
+    budget_fraction: float,
+    first_n: int,
+    last_n: int,
+    mask_method: str,
+    activation_scales: dict[str, Any] | None,
+) -> tuple[set[str], dict[str, Any]]:
+    candidates = collect_dense_keep_candidates(
+        model,
+        target_modules,
+        mask_method=mask_method,
+        activation_scales=activation_scales,
+    )
+    major_weight_count = compute_major_linear_weight_count(model)
+    budget_weight_count = int(max(0.0, budget_fraction) * major_weight_count)
+    selected: set[str] = set()
+
+    def selected_weight() -> int:
+        return sum(item["weight_count"] for item in candidates if item["module"] in selected)
+
+    def try_add(module_names: list[str]) -> None:
+        nonlocal selected
+        current = selected_weight()
+        counts = {item["module"]: item["weight_count"] for item in candidates}
+        for module_name in module_names:
+            if module_name in selected:
+                continue
+            weight_count = counts.get(module_name, 0)
+            if current + weight_count > budget_weight_count:
+                continue
+            selected.add(module_name)
+            current += weight_count
+
+    if policy == "none" or not target_modules or budget_weight_count <= 0:
+        selected = set()
+    elif policy == "qkv":
+        ordered = [
+            item["module"]
+            for item in candidates
+            if item["leaf"] in {"q_proj", "k_proj", "v_proj"}
+        ]
+        try_add(ordered)
+    elif policy == "first_last_layers":
+        layers = sorted({item["layer"] for item in candidates if item["layer"] is not None})
+        first_layers = set(layers[: max(first_n, 0)])
+        tail_layers = layers[-last_n:] if last_n > 0 else []
+        preferred_layers = list(layers[: max(first_n, 0)]) + [
+            layer for layer in tail_layers if layer not in first_layers
+        ]
+        ordered = [
+            item["module"]
+            for layer in preferred_layers
+            for item in candidates
+            if item["layer"] == layer
+        ]
+        try_add(ordered)
+    elif policy == "top_error_layers":
+        grouped: dict[int, dict[str, Any]] = {}
+        for item in candidates:
+            layer = item["layer"]
+            if layer is None:
+                continue
+            group = grouped.setdefault(layer, {"modules": [], "weight_count": 0, "error_proxy": 0.0})
+            group["modules"].append(item["module"])
+            group["weight_count"] += item["weight_count"]
+            group["error_proxy"] += item["error_proxy"]
+        ordered_layers = sorted(
+            grouped.items(),
+            key=lambda pair: pair[1]["error_proxy"] / max(pair[1]["weight_count"], 1),
+            reverse=True,
+        )
+        for _, group in ordered_layers:
+            try_add(group["modules"])
+    elif policy == "top_error_modules":
+        ordered = [
+            item["module"]
+            for item in sorted(candidates, key=lambda item: item["error_per_weight"], reverse=True)
+        ]
+        try_add(ordered)
+    else:
+        raise ValueError(f"unsupported dense keep policy: {policy}")
+
+    keep_weight_count = selected_weight()
+    scope_weight_count = sum(item["weight_count"] for item in candidates)
+    return selected, {
+        "dense_keep_policy": policy,
+        "dense_keep_budget_fraction": budget_fraction,
+        "dense_keep_budget_weight_count": budget_weight_count,
+        "major_linear_weight_count": major_weight_count,
+        "scope_target_weight_count": scope_weight_count,
+        "dense_keep_weight_count": keep_weight_count,
+        "dense_keep_compute_fraction_est": (
+            keep_weight_count / major_weight_count if major_weight_count else 0.0
+        ),
+        "dense_keep_fraction_of_scope": keep_weight_count / scope_weight_count if scope_weight_count else 0.0,
+        "dense_keep_module_names": sorted(selected),
+        "dense_keep_candidate_summary": [
+            {
+                "module": item["module"],
+                "leaf": item["leaf"],
+                "layer": item["layer"],
+                "weight_count": item["weight_count"],
+                "error_proxy": item["error_proxy"],
+                "error_per_weight": item["error_per_weight"],
+                "kept_dense": item["module"] in selected,
+            }
+            for item in candidates
+        ],
+    }
+
+
 def apply_24_mask_to_model(
     model: nn.Module,
     target_modules: tuple[str, ...],
     group_dim: str = "in",
     skip_lm_head: bool = True,
     skip_embeddings: bool = True,
+    mask_method: str = "magnitude",
+    activation_scales: dict[str, Any] | None = None,
+    dense_keep_modules: set[str] | None = None,
+    only_module_names: set[str] | None = None,
 ) -> dict[str, Any]:
     """Apply in-place 2:4 masks to selected Linear weights.
 
     For a Linear weight shaped [out_features, in_features], group_dim="in"
-    groups every 4 consecutive in_features values per output row, keeps the
-    largest 2 by absolute value, and zeroes the other 2. Tails shorter than 4
-    are left unchanged and reported.
+    groups every 4 consecutive in_features values per output row. The default
+    magnitude method keeps the largest 2 by absolute value. The activation-aware
+    method keeps the largest 2 by abs(weight) * input_feature_rms. Tails shorter
+    than 4 are left unchanged and reported.
     """
 
     if group_dim != "in":
         raise ValueError("only group_dim='in' is supported")
+    if mask_method not in ("magnitude", "activation_aware"):
+        raise ValueError(f"unsupported mask_method: {mask_method}")
 
     stats: dict[str, Any] = {
         "target_modules": list(target_modules),
+        "mask_method": mask_method,
         "group_dim": group_dim,
         "skip_lm_head": skip_lm_head,
         "skip_embeddings": skip_embeddings,
         "total_masked_weight_count": 0,
         "zeroed_weight_count": 0,
         "actual_sparsity": 0.0,
+        "scope_target_weight_count": 0,
+        "dense_keep_weight_count": 0,
+        "dense_keep_compute_fraction_est": 0.0,
+        "dense_keep_fraction_of_scope": 0.0,
+        "effective_sparse_fraction": 0.0,
+        "dense_keep_module_names": [],
         "masked_module_names": [],
         "per_module": [],
         "tail_warnings": [],
+        "missing_activation_scale_modules": [],
     }
 
     if not target_modules:
         return stats
 
     target_set = set(target_modules)
+    dense_keep_modules = dense_keep_modules or set()
     with torch.no_grad():
         for name, module in model.named_modules():
             if not isinstance(module, nn.Linear):
+                continue
+            if only_module_names is not None and name not in only_module_names:
                 continue
             leaf = name.rsplit(".", 1)[-1]
             if leaf not in target_set:
@@ -1393,21 +1672,56 @@ def apply_24_mask_to_model(
                 )
                 continue
 
+            total = int(out_features * usable_in)
+            stats["scope_target_weight_count"] += total
+            if name in dense_keep_modules:
+                module_stats = {
+                    "module": name,
+                    "shape": [int(out_features), int(in_features)],
+                    "masked_weight_count": 0,
+                    "original_weight_count": total,
+                    "zeroed_weight_count": 0,
+                    "actual_sparsity": 0.0,
+                    "unmasked_tail_in_features": int(tail),
+                    "mask_method": "dense_keep",
+                    "kept_dense": True,
+                }
+                stats["per_module"].append(module_stats)
+                stats["dense_keep_module_names"].append(name)
+                stats["dense_keep_weight_count"] += total
+                if tail:
+                    stats["tail_warnings"].append(
+                        {"module": name, "in_features": int(in_features), "tail": int(tail)}
+                    )
+                continue
+
             view = weight[:, :usable_in].view(out_features, usable_in // 4, 4)
-            keep_idx = view.abs().topk(k=2, dim=-1, largest=True, sorted=False).indices
+            score = view.abs()
+            module_method = "magnitude"
+            if mask_method == "activation_aware":
+                scale = (activation_scales or {}).get(name)
+                if scale is None:
+                    stats["missing_activation_scale_modules"].append(name)
+                else:
+                    scale = scale[:usable_in].to(device=weight.device, dtype=score.dtype)
+                    score = score * scale.view(1, usable_in // 4, 4)
+                    module_method = "activation_aware"
+            keep_idx = score.topk(k=2, dim=-1, largest=True, sorted=False).indices
             keep = torch.zeros_like(view, dtype=torch.bool)
             keep.scatter_(-1, keep_idx, True)
             zeroed = int((~keep).sum().item())
-            total = int(keep.numel())
             view.masked_fill_(~keep, 0)
 
             module_stats = {
                 "module": name,
                 "shape": [int(out_features), int(in_features)],
                 "masked_weight_count": total,
+                "original_weight_count": total,
                 "zeroed_weight_count": zeroed,
                 "actual_sparsity": zeroed / total if total else 0.0,
                 "unmasked_tail_in_features": int(tail),
+                "mask_method": module_method,
+                "kept_dense": False,
             }
             stats["per_module"].append(module_stats)
             stats["masked_module_names"].append(name)
@@ -1422,7 +1736,205 @@ def apply_24_mask_to_model(
     stats["actual_sparsity"] = (
         stats["zeroed_weight_count"] / total if total else 0.0
     )
+    scope_total = stats["scope_target_weight_count"]
+    stats["dense_keep_fraction_of_scope"] = (
+        stats["dense_keep_weight_count"] / scope_total if scope_total else 0.0
+    )
+    stats["effective_sparse_fraction"] = (
+        stats["zeroed_weight_count"] / scope_total if scope_total else 0.0
+    )
     return stats
+
+
+def collect_calibration_prompts(
+    datasets: dict[str, DatasetPack],
+    max_examples: int,
+    seed: int,
+) -> list[str]:
+    prompts: list[str] = []
+    for pack in datasets.values():
+        for row in pack.rows:
+            prompt = str(row.get("prompt", "")).strip()
+            if prompt:
+                prompts.append(prompt)
+    if max_examples <= 0 or len(prompts) <= max_examples:
+        return prompts
+    rng = random.Random(seed)
+    indices = sorted(rng.sample(range(len(prompts)), max_examples))
+    return [prompts[idx] for idx in indices]
+
+
+def collect_linear_input_rms(
+    model: Any,
+    tokenizer: Any,
+    prompts: list[str],
+    target_modules: tuple[str, ...],
+    *,
+    max_seq_len: int,
+    batch_size: int,
+    device: str,
+    skip_lm_head: bool = True,
+    skip_embeddings: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Collect per-input-feature RMS activations for target Linear modules."""
+
+    if not prompts or not target_modules:
+        return {}, {
+            "num_prompts": len(prompts),
+            "num_modules": 0,
+            "num_modules_with_activations": 0,
+            "max_seq_len": max_seq_len,
+            "batch_size": batch_size,
+        }
+
+    target_set = set(target_modules)
+    sums: dict[str, Any] = {}
+    counts: dict[str, int] = {}
+    handles = []
+
+    def make_hook(name: str):
+        def hook(_module: Any, inputs: tuple[Any, ...]) -> None:
+            if not inputs:
+                return
+            x = inputs[0]
+            if x is None or x.shape[-1] == 0:
+                return
+            flat = x.detach().float().reshape(-1, x.shape[-1])
+            if name not in sums:
+                sums[name] = torch.zeros(flat.shape[-1], device=flat.device, dtype=torch.float32)
+                counts[name] = 0
+            sums[name].add_(flat.pow(2).sum(dim=0))
+            counts[name] += int(flat.shape[0])
+
+        return hook
+
+    for name, module in model.named_modules():
+        if not isinstance(module, nn.Linear):
+            continue
+        leaf = name.rsplit(".", 1)[-1]
+        if leaf not in target_set:
+            continue
+        if module_is_skipped(name, skip_lm_head, skip_embeddings):
+            continue
+        handles.append(module.register_forward_pre_hook(make_hook(name)))
+
+    old_use_cache = getattr(model.config, "use_cache", None)
+    if old_use_cache is not None:
+        model.config.use_cache = False
+
+    try:
+        with torch.no_grad():
+            for start in range(0, len(prompts), batch_size):
+                batch_prompts = prompts[start : start + batch_size]
+                encoded = tokenizer(
+                    batch_prompts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=max_seq_len,
+                )
+                encoded = {key: value.to(device) for key, value in encoded.items()}
+                model(**encoded)
+    finally:
+        for handle in handles:
+            handle.remove()
+        if old_use_cache is not None:
+            model.config.use_cache = old_use_cache
+
+    scales: dict[str, Any] = {}
+    module_counts: dict[str, int] = {}
+    for name, sum_sq in sums.items():
+        count = max(counts.get(name, 0), 1)
+        scales[name] = torch.sqrt(sum_sq / count).clamp_min_(1e-8)
+        module_counts[name] = counts.get(name, 0)
+
+    return scales, {
+        "num_prompts": len(prompts),
+        "num_registered_modules": len(handles),
+        "num_modules_with_activations": len(scales),
+        "max_seq_len": max_seq_len,
+        "batch_size": batch_size,
+        "module_token_counts": module_counts,
+    }
+
+
+def load_calibration_prompt_file(path: Path, max_examples: int, seed: int) -> list[str]:
+    rows = read_jsonl(path)
+    prompts = []
+    for row in rows:
+        prompt = first_text_field(row, ("prompt", "text"))
+        if prompt.strip():
+            prompts.append(prompt.strip())
+    if not prompts:
+        raise RuntimeError(f"no calibration prompts found in {path}")
+    if max_examples > 0 and max_examples < len(prompts):
+        rng = random.Random(seed)
+        indices = sorted(rng.sample(range(len(prompts)), max_examples))
+        prompts = [prompts[idx] for idx in indices]
+    return prompts
+
+
+def calibration_cache_paths(cache_root: Path, model_label: str) -> tuple[Path, Path]:
+    return cache_root / f"{model_label}.pt", cache_root / f"{model_label}_metadata.json"
+
+
+def save_activation_cache(
+    cache_root: Path,
+    model_label: str,
+    model_id: str,
+    dtype: str,
+    calibration_prompts_path: Path,
+    activation_scales: dict[str, Any],
+    calibration_stats: dict[str, Any],
+) -> tuple[Path, Path]:
+    cache_root.mkdir(parents=True, exist_ok=True)
+    tensor_path, metadata_path = calibration_cache_paths(cache_root, model_label)
+    cpu_scales = {
+        name: scale.detach().cpu()
+        for name, scale in sorted(activation_scales.items())
+    }
+    torch.save(cpu_scales, tensor_path)
+    metadata = {
+        "model_label": model_label,
+        "model_id": model_id,
+        "dtype": dtype,
+        "calibration_prompts": str(calibration_prompts_path.resolve()),
+        "target_modules": list(QUALITY_MASK_TARGETS["all"]),
+        "tensor_path": str(tensor_path.resolve()),
+        "created_at": timestamp(),
+        **calibration_stats,
+    }
+    write_json(metadata_path, metadata)
+    return tensor_path, metadata_path
+
+
+def load_activation_cache(
+    cache_root: Path,
+    model_label: str,
+    *,
+    required_modules: tuple[str, ...] = QUALITY_MASK_TARGETS["all"],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    tensor_path, metadata_path = calibration_cache_paths(cache_root, model_label)
+    if not tensor_path.exists():
+        raise FileNotFoundError(
+            f"missing activation RMS cache for {model_label}: {tensor_path}. "
+            "Run `residual_24_feasibility.py calibrate-24` first."
+        )
+    activation_scales = torch.load(tensor_path, map_location="cpu")
+    if not isinstance(activation_scales, dict) or not activation_scales:
+        raise RuntimeError(f"invalid activation RMS cache: {tensor_path}")
+    metadata = {}
+    if metadata_path.exists():
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    missing_required = [
+        name for name in required_modules
+        if not any(key.endswith(f".{name}") or key == name for key in activation_scales)
+    ]
+    metadata["cache_root"] = str(cache_root.resolve())
+    metadata["tensor_path"] = str(tensor_path.resolve())
+    metadata["metadata_path"] = str(metadata_path.resolve())
+    metadata["missing_required_leaf_modules"] = missing_required
+    return activation_scales, metadata
 
 
 def load_gsm8k(limit: int | None, seed: int) -> DatasetPack:
@@ -2155,22 +2667,40 @@ def evaluate_dataset(
     return failed_metric(dataset, f"unknown dataset: {dataset}")
 
 
-def make_run_dir(output_root: Path, model_label: str, mask_scope: str) -> Path:
-    run_dir = output_root / "runs" / f"{model_label}_{mask_scope}"
+def make_run_dir(
+    output_root: Path,
+    model_label: str,
+    mask_scope: str,
+    dense_keep_policy: str = "none",
+) -> Path:
+    suffix = "" if dense_keep_policy == "none" else f"_{dense_keep_policy}"
+    run_dir = output_root / "runs" / f"{model_label}_{mask_scope}{suffix}"
     run_dir.mkdir(parents=True, exist_ok=True)
     return run_dir
 
 
-def empty_mask_stats(mask_scope: str) -> dict[str, Any]:
+def empty_mask_stats(
+    mask_scope: str,
+    mask_method: str = "magnitude",
+    dense_keep_policy: str = "none",
+) -> dict[str, Any]:
     return {
         "mask_scope": mask_scope,
+        "mask_method": mask_method,
+        "dense_keep_policy": dense_keep_policy,
         "target_modules": list(QUALITY_MASK_TARGETS.get(mask_scope, ())),
         "total_masked_weight_count": 0,
         "zeroed_weight_count": 0,
         "actual_sparsity": 0.0,
+        "effective_sparse_fraction": 0.0,
+        "dense_keep_weight_count": 0,
+        "dense_keep_compute_fraction_est": 0.0,
+        "dense_keep_fraction_of_scope": 0.0,
+        "dense_keep_module_names": [],
         "masked_module_names": [],
         "per_module": [],
         "tail_warnings": [],
+        "missing_activation_scale_modules": [],
     }
 
 
@@ -2178,19 +2708,23 @@ def run_one_scope(
     model_label: str,
     model_id: str,
     mask_scope: str,
+    dense_keep_policy: str,
     datasets: dict[str, DatasetPack],
     args: argparse.Namespace,
     output_root: Path,
 ) -> dict[str, Any]:
-    run_dir = make_run_dir(output_root, model_label, mask_scope)
+    run_dir = make_run_dir(output_root, model_label, mask_scope, dense_keep_policy)
     run_config = {
         "model_label": model_label,
         "model_id": model_id,
         "mask_scope": mask_scope,
+        "mask_method": args.mask_method,
+        "dense_keep_policy": dense_keep_policy,
         "datasets": list(datasets),
         "dtype": args.dtype,
         "device": args.device,
         "max_seq_len": args.max_seq_len,
+        "calibration_cache_root": str(args.calibration_cache_root),
         "seed": args.seed,
         "started_at": timestamp(),
     }
@@ -2207,7 +2741,7 @@ def run_one_scope(
         )
     except Exception as exc:  # noqa: BLE001
         error = f"model_load_failed: {exc}"
-        mask_stats = empty_mask_stats(mask_scope)
+        mask_stats = empty_mask_stats(mask_scope, args.mask_method, dense_keep_policy)
         write_json(run_dir / "mask_stats.json", mask_stats)
         metrics = {
             dataset: failed_metric(dataset, error)
@@ -2224,16 +2758,44 @@ def run_one_scope(
 
     try:
         if mask_scope == "none":
-            mask_stats = empty_mask_stats(mask_scope)
+            mask_stats = empty_mask_stats(mask_scope, args.mask_method, dense_keep_policy)
         else:
+            activation_scales = None
+            calibration_stats = None
+            needs_calibration = (
+                args.mask_method == "activation_aware"
+                or dense_keep_policy in {"top_error_layers", "top_error_modules"}
+            )
+            if needs_calibration:
+                activation_scales, calibration_stats = load_activation_cache(
+                    args.calibration_cache_root,
+                    model_label,
+                    required_modules=QUALITY_MASK_TARGETS[mask_scope],
+                )
+            dense_keep_modules, dense_keep_stats = select_dense_keep_modules(
+                model,
+                QUALITY_MASK_TARGETS[mask_scope],
+                policy=dense_keep_policy,
+                budget_fraction=args.dense_keep_budget_fraction,
+                first_n=args.dense_keep_first_n,
+                last_n=args.dense_keep_last_n,
+                mask_method=args.mask_method,
+                activation_scales=activation_scales,
+            )
             mask_stats = apply_24_mask_to_model(
                 model,
                 QUALITY_MASK_TARGETS[mask_scope],
                 group_dim="in",
                 skip_lm_head=True,
                 skip_embeddings=True,
+                mask_method=args.mask_method,
+                activation_scales=activation_scales,
+                dense_keep_modules=dense_keep_modules,
             )
             mask_stats["mask_scope"] = mask_scope
+            mask_stats.update(dense_keep_stats)
+            if calibration_stats is not None:
+                mask_stats["calibration"] = calibration_stats
         write_json(run_dir / "mask_stats.json", mask_stats)
 
         if args.save_masked_model and mask_scope != "none":
@@ -2291,24 +2853,55 @@ def order_mask_scopes(scopes: list[str]) -> list[str]:
     return ordered
 
 
+def parse_dense_keep_policies(args: argparse.Namespace) -> list[str]:
+    valid = {"none", "first_last_layers", "qkv", "top_error_layers", "top_error_modules"}
+    policies = (
+        parse_csv_list(args.dense_keep_policies)
+        if args.dense_keep_policies
+        else [args.dense_keep_policy]
+    )
+    unknown = [policy for policy in policies if policy not in valid]
+    if unknown:
+        raise ValueError(f"unknown dense keep policies: {unknown}")
+    out: list[str] = []
+    for policy in policies:
+        if policy not in out:
+            out.append(policy)
+    return out
+
+
+def build_scope_policy_pairs(scopes: list[str], policies: list[str]) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    if "none" in scopes:
+        pairs.append(("none", "none"))
+    for policy in policies:
+        for scope in scopes:
+            if scope == "none":
+                continue
+            pair = (scope, policy)
+            if pair not in pairs:
+                pairs.append(pair)
+    return pairs
+
+
 def metric_value(metric: dict[str, Any]) -> float | None:
     return safe_float(metric.get("value"))
 
 
 def build_csv_rows(
-    all_results: dict[tuple[str, str], dict[str, Any]],
+    all_results: dict[tuple[str, str, str], dict[str, Any]],
     model_ids: dict[str, str],
     dtype: str,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     dense_by_model_dataset: dict[tuple[str, str], dict[str, Any]] = {}
-    for (model_label, mask_scope), result in all_results.items():
+    for (model_label, _dense_keep_policy, mask_scope), result in all_results.items():
         if mask_scope != "none":
             continue
         for dataset, metric in result["metrics"].items():
             dense_by_model_dataset[(model_label, dataset)] = metric
 
-    for (model_label, mask_scope), result in sorted(all_results.items()):
+    for (model_label, dense_keep_policy, mask_scope), result in sorted(all_results.items()):
         mask_stats = result["mask_stats"]
         for dataset, metric in result["metrics"].items():
             dense_metric = dense_by_model_dataset.get((model_label, dataset), {})
@@ -2326,6 +2919,8 @@ def build_csv_rows(
                     "model_label": model_label,
                     "model_id": model_ids.get(model_label, ""),
                     "mask_scope": mask_scope,
+                    "mask_method": mask_stats.get("mask_method", "magnitude"),
+                    "dense_keep_policy": mask_stats.get("dense_keep_policy", dense_keep_policy),
                     "dataset": dataset,
                     "metric_name": metric.get("metric_name", ""),
                     "metric_type": metric_type,
@@ -2339,6 +2934,9 @@ def build_csv_rows(
                     "pass_at_1_available": bool(metric.get("pass_at_1_available", metric_type == "pass_at_1" and sparse_value is not None)),
                     "dtype": dtype,
                     "actual_sparsity": mask_stats.get("actual_sparsity", 0.0),
+                    "effective_sparse_fraction": mask_stats.get("effective_sparse_fraction", mask_stats.get("actual_sparsity", 0.0)),
+                    "dense_keep_compute_fraction_est": mask_stats.get("dense_keep_compute_fraction_est", 0.0),
+                    "dense_keep_weight_count": mask_stats.get("dense_keep_weight_count", 0),
                     "zeroed_weight_count": mask_stats.get("zeroed_weight_count", 0),
                     "total_masked_weight_count": mask_stats.get("total_masked_weight_count", 0),
                     "skipped": bool(metric.get("skipped", False) or metric.get("skipped_pass_at_1", False)),
@@ -2447,12 +3045,14 @@ def write_summary_md(
         )
         handle.write("## Results\n\n")
         handle.write(
-            "| model | dataset | mask scope | metric | dense | masked | delta | ratio | examples | ppl mode | risk | error |\n"
+            "| model | dataset | mask scope | mask method | dense keep | dense keep compute | metric | dense | masked | delta | ratio | examples | ppl mode | risk | error |\n"
         )
-        handle.write("|---|---|---|---|---:|---:|---:|---:|---:|---|---|---|\n")
+        handle.write("|---|---|---|---|---|---:|---|---:|---:|---:|---:|---:|---|---|---|\n")
         for row in rows:
             handle.write(
                 f"| {row['model_label']} | {row['dataset']} | {row['mask_scope']} | "
+                f"{row.get('mask_method', 'magnitude')} | {row.get('dense_keep_policy', 'none')} | "
+                f"{format_value(row.get('dense_keep_compute_fraction_est'))} | "
                 f"{row['metric_name']} | {format_value(row['dense_metric_value'])} | "
                 f"{format_value(row['sparse_metric_value'])} | {format_value(row['delta_vs_dense'])} | "
                 f"{format_value(row['ratio_vs_dense'])} | {row['num_examples']} | "
@@ -2462,7 +3062,9 @@ def write_summary_md(
         handle.write(
             "For every selected `nn.Linear.weight` shaped `[out_features, in_features]`, "
             "weights are grouped along `in_features` in consecutive groups of 4. "
-            "The two largest absolute values are kept and the other two are zeroed. "
+            "The magnitude method keeps the two largest absolute weights. "
+            "The activation-aware method keeps the two largest `abs(weight) * input_rms` scores, "
+            "where input RMS is loaded from the reusable C4 calibration cache before masking. "
             "Tails shorter than 4 are left unmasked and reported in `mask_stats.json`.\n\n"
         )
         handle.write(
@@ -2478,10 +3080,20 @@ def write_run_config(output_root: Path, args: argparse.Namespace, model_ids: dic
         "models": parse_csv_list(args.models),
         "model_ids": model_ids,
         "mask_scopes": parse_csv_list(args.mask_scopes),
+        "mask_method": args.mask_method,
+        "dense_keep_policy": args.dense_keep_policy,
+        "dense_keep_policies": parse_csv_list(args.dense_keep_policies) if args.dense_keep_policies else [],
+        "dense_keep_budget_fraction": args.dense_keep_budget_fraction,
+        "dense_keep_first_n": args.dense_keep_first_n,
+        "dense_keep_last_n": args.dense_keep_last_n,
         "datasets": parse_csv_list(args.datasets),
         "dtype": args.dtype,
         "device": args.device,
         "max_seq_len": args.max_seq_len,
+        "calibration_cache_root": str(args.calibration_cache_root),
+        "calibration_num_examples": args.calibration_num_examples,
+        "calibration_max_seq_len": args.calibration_max_seq_len,
+        "calibration_batch_size": args.calibration_batch_size,
         "seed": args.seed,
         "smoke": args.smoke,
         "created_at": timestamp(),
@@ -2492,7 +3104,7 @@ def write_run_config(output_root: Path, args: argparse.Namespace, model_ids: dic
 def summarize_existing(output_root: Path, dtype: str) -> None:
     config = json.loads((output_root / "run_config.json").read_text(encoding="utf-8"))
     model_ids = config.get("model_ids", QUALITY_DEFAULT_MODELS)
-    all_results: dict[tuple[str, str], dict[str, Any]] = {}
+    all_results: dict[tuple[str, str, str], dict[str, Any]] = {}
     for run_dir in sorted((output_root / "runs").glob("*_*")):
         run_config_path = run_dir / "run_config.json"
         metrics_path = run_dir / "metrics.json"
@@ -2504,7 +3116,11 @@ def summarize_existing(output_root: Path, dtype: str) -> None:
         mask_stats = json.loads(mask_stats_path.read_text(encoding="utf-8"))
         model_label = run_config["model_label"]
         mask_scope = run_config["mask_scope"]
-        all_results[(model_label, mask_scope)] = {
+        dense_keep_policy = run_config.get(
+            "dense_keep_policy",
+            mask_stats.get("dense_keep_policy", "none"),
+        )
+        all_results[(model_label, dense_keep_policy, mask_scope)] = {
             "failed": bool(metrics.get("failed", False)),
             "error": metrics.get("error", ""),
             "mask_stats": mask_stats,
@@ -2516,10 +3132,562 @@ def summarize_existing(output_root: Path, dtype: str) -> None:
     write_json(
         output_root / "all_metrics.json",
         {
-            f"{model_label}/{mask_scope}": result
-            for (model_label, mask_scope), result in all_results.items()
+            f"{model_label}/{dense_keep_policy}/{mask_scope}": result
+            for (model_label, dense_keep_policy, mask_scope), result in all_results.items()
         },
     )
+
+
+def parse_layer_indices(value: str) -> list[int]:
+    if not value:
+        return []
+    layers: list[int] = []
+    for part in value.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_s, end_s = part.split("-", 1)
+            start = int(start_s)
+            end = int(end_s)
+            step = 1 if end >= start else -1
+            for idx in range(start, end + step, step):
+                if idx not in layers:
+                    layers.append(idx)
+        else:
+            idx = int(part)
+            if idx not in layers:
+                layers.append(idx)
+    return layers
+
+
+def group_target_modules_by_layer(
+    model: Any,
+    target_modules: tuple[str, ...],
+) -> dict[int, list[str]]:
+    grouped: dict[int, list[str]] = defaultdict(list)
+    for name, _module, _out_features, _in_features, _usable_in in iter_target_linear_modules(
+        model,
+        target_modules,
+        skip_lm_head=True,
+        skip_embeddings=True,
+    ):
+        layer = layer_index_from_module_name(name)
+        if layer is not None:
+            grouped[layer].append(name)
+    return {layer: names for layer, names in sorted(grouped.items())}
+
+
+def snapshot_module_weights(model: Any, module_names: list[str]) -> dict[str, Any]:
+    modules = dict(model.named_modules())
+    snapshots: dict[str, Any] = {}
+    for name in module_names:
+        module = modules.get(name)
+        if not isinstance(module, nn.Linear):
+            continue
+        snapshots[name] = module.weight.detach().cpu().clone()
+    return snapshots
+
+
+def restore_module_weights(model: Any, snapshots: dict[str, Any]) -> None:
+    modules = dict(model.named_modules())
+    with torch.no_grad():
+        for name, weight in snapshots.items():
+            module = modules.get(name)
+            if not isinstance(module, nn.Linear):
+                continue
+            module.weight.copy_(weight.to(device=module.weight.device, dtype=module.weight.dtype))
+
+
+def layer_sensitivity_row(
+    *,
+    model_label: str,
+    model_id: str,
+    layer_index: int,
+    dataset: str,
+    dense_metric: dict[str, Any],
+    layer_metric: dict[str, Any],
+    mask_stats: dict[str, Any],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    dense_value = metric_value(dense_metric)
+    layer_value = metric_value(layer_metric)
+    metric_type = layer_metric.get("metric_type", dense_metric.get("metric_type", ""))
+    delta = None
+    ratio = None
+    accuracy_drop = None
+    if dense_value is not None and layer_value is not None:
+        delta = layer_value - dense_value
+        if metric_type == "ppl" and dense_value:
+            ratio = layer_value / dense_value
+        elif metric_type in ("accuracy", "pass_at_1"):
+            accuracy_drop = dense_value - layer_value
+    return {
+        "model_label": model_label,
+        "model_id": model_id,
+        "layer_index": layer_index,
+        "dataset": dataset,
+        "metric_name": layer_metric.get("metric_name", dense_metric.get("metric_name", "")),
+        "metric_type": metric_type,
+        "dense_metric_value": dense_value,
+        "layer_metric_value": layer_value,
+        "delta_vs_dense": delta,
+        "ratio_vs_dense": ratio,
+        "accuracy_drop": accuracy_drop,
+        "num_examples": layer_metric.get("num_examples", dense_metric.get("num_examples", 0)),
+        "ppl_mode": layer_metric.get("ppl_mode", dense_metric.get("ppl_mode", "")),
+        "dtype": args.dtype,
+        "mask_method": "activation_aware",
+        "calibration_num_examples": getattr(
+            args,
+            "_active_calibration_num_examples",
+            args.calibration_num_examples,
+        ),
+        "zeroed_weight_count": mask_stats.get("zeroed_weight_count", 0),
+        "total_masked_weight_count": mask_stats.get("total_masked_weight_count", 0),
+        "actual_sparsity": mask_stats.get("actual_sparsity", 0.0),
+        "failed": bool(layer_metric.get("failed", False)),
+        "error": layer_metric.get("error", ""),
+    }
+
+
+def write_layer_sensitivity_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    write_csv(path, rows, LAYER_SENSITIVITY_CSV_FIELDS)
+
+
+def grouped_layer_scores(
+    rows: list[dict[str, Any]],
+    metric_type: str,
+) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, int], list[float]] = defaultdict(list)
+    for row in rows:
+        if row.get("metric_type") != metric_type or row.get("failed"):
+            continue
+        value = safe_float(
+            row.get("ratio_vs_dense") if metric_type == "ppl" else row.get("accuracy_drop")
+        )
+        if value is not None:
+            grouped[(str(row["model_label"]), int(row["layer_index"]))].append(value)
+    out = []
+    for (model_label, layer_index), values in grouped.items():
+        if values:
+            out.append(
+                {
+                    "model_label": model_label,
+                    "layer_index": layer_index,
+                    "score": mean(values),
+                    "datasets": len(values),
+                }
+            )
+    out.sort(key=lambda row: (row["model_label"], -row["score"], row["layer_index"]))
+    return out
+
+
+def plot_layer_sensitivity(rows: list[dict[str, Any]], output_root: Path) -> Path | None:
+    valid_rows = [row for row in rows if not row.get("failed")]
+    if not valid_rows:
+        return None
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+    Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
+    import matplotlib.pyplot as plt
+
+    models = sorted({str(row["model_label"]) for row in valid_rows})
+    fig, axes = plt.subplots(
+        len(models),
+        2,
+        squeeze=False,
+        figsize=(13, max(3.8, 3.4 * len(models))),
+        constrained_layout=True,
+    )
+    for row_idx, model_label in enumerate(models):
+        model_rows = [row for row in valid_rows if row["model_label"] == model_label]
+        ppl_ax = axes[row_idx][0]
+        acc_ax = axes[row_idx][1]
+        for dataset in sorted({row["dataset"] for row in model_rows if row["metric_type"] == "ppl"}):
+            dataset_rows = [
+                row for row in model_rows
+                if row["dataset"] == dataset and row["metric_type"] == "ppl"
+            ]
+            dataset_rows.sort(key=lambda row: int(row["layer_index"]))
+            xs = [int(row["layer_index"]) for row in dataset_rows]
+            ys = [safe_float(row.get("ratio_vs_dense")) for row in dataset_rows]
+            pairs = [(x, y) for x, y in zip(xs, ys, strict=True) if y is not None]
+            if pairs:
+                ppl_ax.plot([x for x, _ in pairs], [y for _, y in pairs], marker="o", label=dataset)
+        for dataset in sorted({row["dataset"] for row in model_rows if row["metric_type"] in ("accuracy", "pass_at_1")}):
+            dataset_rows = [
+                row for row in model_rows
+                if row["dataset"] == dataset and row["metric_type"] in ("accuracy", "pass_at_1")
+            ]
+            dataset_rows.sort(key=lambda row: int(row["layer_index"]))
+            xs = [int(row["layer_index"]) for row in dataset_rows]
+            ys = [safe_float(row.get("accuracy_drop")) for row in dataset_rows]
+            pairs = [(x, y) for x, y in zip(xs, ys, strict=True) if y is not None]
+            if pairs:
+                acc_ax.plot([x for x, _ in pairs], [y for _, y in pairs], marker="o", label=dataset)
+        ppl_ax.axhline(1.0, color="black", linewidth=0.8, linestyle="--")
+        acc_ax.axhline(0.0, color="black", linewidth=0.8, linestyle="--")
+        ppl_ax.set_title(f"{model_label}: PPL loss by single masked layer")
+        acc_ax.set_title(f"{model_label}: ACC drop by single masked layer")
+        ppl_ax.set_xlabel("Transformer layer")
+        acc_ax.set_xlabel("Transformer layer")
+        ppl_ax.set_ylabel("PPL ratio vs dense")
+        acc_ax.set_ylabel("Accuracy drop vs dense")
+        ppl_ax.grid(True, alpha=0.25)
+        acc_ax.grid(True, alpha=0.25)
+        ppl_ax.legend(loc="best")
+        acc_ax.legend(loc="best")
+    fig_dir = output_root / "figures"
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    path = fig_dir / "layer_sensitivity.png"
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+    return path
+
+
+def write_layer_sensitivity_summary(
+    path: Path,
+    rows: list[dict[str, Any]],
+    args: argparse.Namespace,
+    output_root: Path,
+    figure_path: Path | None,
+) -> None:
+    ppl_scores = grouped_layer_scores(rows, "ppl")
+    acc_scores = grouped_layer_scores(rows, "accuracy")
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write("# Layer-wise Activation-aware 2:4 Sensitivity\n\n")
+        handle.write(f"Output root: `{output_root.resolve()}`\n\n")
+        handle.write(
+            "Each layer row masks only that transformer layer with activation-aware 2:4. "
+            "All other layers remain dense. The reusable C4 calibration cache provides "
+            "input RMS for the 2:4 selection rule.\n\n"
+        )
+        handle.write("## How To Read\n\n")
+        handle.write(
+            "- PPL rows use `ratio_vs_dense`; larger means the layer is more sensitive.\n"
+            "- ACC rows use `accuracy_drop = dense_accuracy - layer_masked_accuracy`; larger means the layer is more sensitive.\n"
+            "- This is a quality-loss experiment with dense PyTorch kernels, not a sparse-kernel speedup result.\n\n"
+        )
+        handle.write("## Inputs\n\n")
+        handle.write(f"- models: `{args.models}`\n")
+        handle.write(f"- datasets: `{args.datasets}`\n")
+        handle.write(f"- calibration cache root: `{args.calibration_cache_root}`\n")
+        handle.write(
+            f"- calibration examples: `{getattr(args, '_active_calibration_num_examples', args.calibration_num_examples)}`\n"
+        )
+        handle.write(f"- dtype: `{args.dtype}`\n\n")
+        if figure_path is not None:
+            handle.write(f"Figure: `{figure_path.resolve()}`\n\n")
+        handle.write("## Most Sensitive Layers By PPL\n\n")
+        handle.write("| model | layer | avg PPL ratio | datasets |\n")
+        handle.write("|---|---:|---:|---:|\n")
+        for row in ppl_scores[:10]:
+            handle.write(
+                f"| {row['model_label']} | {row['layer_index']} | "
+                f"{row['score']:.6f} | {row['datasets']} |\n"
+            )
+        handle.write("\n## Most Sensitive Layers By Accuracy\n\n")
+        handle.write("| model | layer | avg ACC drop | datasets |\n")
+        handle.write("|---|---:|---:|---:|\n")
+        for row in acc_scores[:10]:
+            handle.write(
+                f"| {row['model_label']} | {row['layer_index']} | "
+                f"{row['score']:.6f} | {row['datasets']} |\n"
+            )
+        handle.write("\n## Files\n\n")
+        handle.write("- `layer_sensitivity.csv`: per model/layer/dataset metrics.\n")
+        handle.write("- `figures/layer_sensitivity.png`: combined PPL and ACC sensitivity figure.\n")
+
+
+def write_layer_sensitivity_config(
+    output_root: Path,
+    args: argparse.Namespace,
+    model_ids: dict[str, str],
+) -> None:
+    write_json(
+        output_root / "run_config.json",
+        {
+            "argv": sys.argv,
+            "models": parse_csv_list(args.models),
+            "model_ids": model_ids,
+            "layers": args.layers,
+            "datasets": parse_csv_list(args.datasets),
+            "dtype": args.dtype,
+            "device": args.device,
+            "max_seq_len": args.max_seq_len,
+            "calibration_cache_root": str(args.calibration_cache_root),
+            "calibration_num_examples": args.calibration_num_examples,
+            "calibration_max_seq_len": args.calibration_max_seq_len,
+            "calibration_batch_size": args.calibration_batch_size,
+            "seed": args.seed,
+            "smoke": args.smoke,
+            "created_at": timestamp(),
+        },
+    )
+
+
+def run_calibrate_24(args: argparse.Namespace) -> None:
+    ensure_quality_dependencies()
+    set_seed(args.seed)
+    if args.device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA requested but torch.cuda.is_available() is false")
+
+    output_root = args.output_root or DEFAULT_C4_CALIBRATION_CACHE_ROOT
+    output_root.mkdir(parents=True, exist_ok=True)
+    calibration_prompts_path = args.calibration_prompts
+    prompts = load_calibration_prompt_file(
+        calibration_prompts_path,
+        args.calibration_num_examples,
+        args.seed,
+    )
+
+    model_ids = dict(LAYER_SENSITIVITY_DEFAULT_MODELS)
+    model_ids.update(parse_model_id_overrides(args.model_id))
+    selected_models = parse_csv_list(args.models)
+    write_json(
+        output_root / "calibration_run_config.json",
+        {
+            "argv": sys.argv,
+            "models": selected_models,
+            "model_ids": model_ids,
+            "calibration_prompts": str(calibration_prompts_path.resolve()),
+            "num_prompts": len(prompts),
+            "calibration_max_seq_len": args.calibration_max_seq_len,
+            "calibration_batch_size": args.calibration_batch_size,
+            "dtype": args.dtype,
+            "device": args.device,
+            "seed": args.seed,
+            "created_at": timestamp(),
+        },
+    )
+
+    for model_label in selected_models:
+        model_id = model_ids.get(model_label)
+        if not model_id:
+            raise ValueError(f"unknown model label: {model_label}")
+        print(f"[INFO] Calibrating model={model_label}", flush=True)
+        dtype = dtype_from_arg(args.dtype)
+        model, tokenizer = load_model_and_tokenizer(
+            model_id,
+            dtype,
+            args.device,
+            args.trust_remote_code,
+            args.local_files_only,
+        )
+        try:
+            activation_scales, calibration_stats = collect_linear_input_rms(
+                model,
+                tokenizer,
+                prompts,
+                QUALITY_MASK_TARGETS["all"],
+                max_seq_len=args.calibration_max_seq_len,
+                batch_size=args.calibration_batch_size,
+                device=args.device,
+                skip_lm_head=True,
+                skip_embeddings=True,
+            )
+            tensor_path, metadata_path = save_activation_cache(
+                output_root,
+                model_label,
+                model_id,
+                args.dtype,
+                calibration_prompts_path,
+                activation_scales,
+                calibration_stats,
+            )
+            print(tensor_path)
+            print(metadata_path)
+        finally:
+            del model
+            del tokenizer
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+
+def configure_layer_sensitivity_smoke(args: argparse.Namespace) -> None:
+    if not args.smoke:
+        return
+    args.models = "qwen3_8b"
+    args.layers = "0,1"
+    args.datasets = "mtbench,dolly,gsm8k,math_reasoning"
+    args.mtbench_num_examples = 4
+    args.dolly_num_examples = 4
+    args.gsm8k_num_examples = 4
+    args.math_num_examples = 4
+    args.generation_batch_size = 2
+
+
+def run_layer_sensitivity(args: argparse.Namespace) -> None:
+    configure_layer_sensitivity_smoke(args)
+    output_root = args.output_root or (
+        QUALITY_RESULTS_ROOT / f"structured_24_layer_sensitivity_{timestamp()}"
+    )
+    output_root.mkdir(parents=True, exist_ok=True)
+    ensure_quality_dependencies()
+    set_seed(args.seed)
+    if args.device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA requested but torch.cuda.is_available() is false")
+
+    model_ids = dict(LAYER_SENSITIVITY_DEFAULT_MODELS)
+    model_ids.update(parse_model_id_overrides(args.model_id))
+    selected_models = parse_csv_list(args.models)
+    selected_datasets = load_datasets(args)
+    write_layer_sensitivity_config(output_root, args, model_ids)
+
+    rows: list[dict[str, Any]] = []
+    csv_path = output_root / "layer_sensitivity.csv"
+    summary_path = output_root / "summary.md"
+    for model_label in selected_models:
+        model_id = model_ids.get(model_label)
+        if not model_id:
+            raise ValueError(f"unknown model label: {model_label}")
+        print(f"[INFO] Layer sensitivity model={model_label}", flush=True)
+        dtype = dtype_from_arg(args.dtype)
+        model, tokenizer = load_model_and_tokenizer(
+            model_id,
+            dtype,
+            args.device,
+            args.trust_remote_code,
+            args.local_files_only,
+        )
+        try:
+            layer_modules = group_target_modules_by_layer(model, QUALITY_MASK_TARGETS["all"])
+            layers = parse_layer_indices(args.layers) or sorted(layer_modules)
+            layers = [layer for layer in layers if layer in layer_modules]
+            if not layers:
+                raise RuntimeError(f"no matching transformer layers for {model_label}")
+            activation_scales, calibration_stats = load_activation_cache(
+                args.calibration_cache_root,
+                model_label,
+                required_modules=QUALITY_MASK_TARGETS["all"],
+            )
+            args._active_calibration_num_examples = int(
+                calibration_stats.get("num_prompts", args.calibration_num_examples)
+            )
+            write_json(
+                output_root / "calibration" / f"{model_label}.json",
+                calibration_stats,
+            )
+
+            dense_run_dir = output_root / "runs" / f"{model_label}_dense"
+            dense_run_dir.mkdir(parents=True, exist_ok=True)
+            dense_metrics: dict[str, Any] = {}
+            for dataset_name, pack in selected_datasets.items():
+                started = time.time()
+                try:
+                    metric = evaluate_dataset(
+                        dataset_name,
+                        model,
+                        tokenizer,
+                        pack,
+                        args,
+                        dense_run_dir,
+                        output_root,
+                        model_label,
+                        "none",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    metric = failed_metric(dataset_name, str(exc))
+                metric["elapsed_sec"] = round(time.time() - started, 3)
+                metric.setdefault("failed", False)
+                metric.setdefault("error", "")
+                dense_metrics[dataset_name] = metric
+                write_json(
+                    dense_run_dir / "metrics.json",
+                    {"failed": False, "datasets": dense_metrics},
+                )
+
+            for layer_index in layers:
+                module_names = layer_modules[layer_index]
+                print(
+                    f"[INFO] model={model_label} layer={layer_index} modules={len(module_names)}",
+                    flush=True,
+                )
+                layer_run_dir = output_root / "runs" / f"{model_label}_layer_{layer_index:02d}"
+                layer_run_dir.mkdir(parents=True, exist_ok=True)
+                write_json(
+                    layer_run_dir / "run_config.json",
+                    {
+                        "model_label": model_label,
+                        "model_id": model_id,
+                        "layer_index": layer_index,
+                        "module_names": module_names,
+                    },
+                )
+                snapshots = snapshot_module_weights(model, module_names)
+                try:
+                    mask_stats = apply_24_mask_to_model(
+                        model,
+                        QUALITY_MASK_TARGETS["all"],
+                        group_dim="in",
+                        skip_lm_head=True,
+                        skip_embeddings=True,
+                        mask_method="activation_aware",
+                        activation_scales=activation_scales,
+                        only_module_names=set(module_names),
+                    )
+                    mask_stats["layer_index"] = layer_index
+                    mask_stats["layer_module_names"] = module_names
+                    write_json(layer_run_dir / "mask_stats.json", mask_stats)
+                    layer_metrics: dict[str, Any] = {}
+                    for dataset_name, pack in selected_datasets.items():
+                        started = time.time()
+                        try:
+                            metric = evaluate_dataset(
+                                dataset_name,
+                                model,
+                                tokenizer,
+                                pack,
+                                args,
+                                layer_run_dir,
+                                output_root,
+                                model_label,
+                                f"layer_{layer_index}",
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            metric = failed_metric(dataset_name, str(exc))
+                        metric["elapsed_sec"] = round(time.time() - started, 3)
+                        metric.setdefault("failed", False)
+                        metric.setdefault("error", "")
+                        layer_metrics[dataset_name] = metric
+                        rows.append(
+                            layer_sensitivity_row(
+                                model_label=model_label,
+                                model_id=model_id,
+                                layer_index=layer_index,
+                                dataset=dataset_name,
+                                dense_metric=dense_metrics.get(dataset_name, {}),
+                                layer_metric=metric,
+                                mask_stats=mask_stats,
+                                args=args,
+                            )
+                        )
+                        write_json(
+                            layer_run_dir / "metrics.json",
+                            {"failed": False, "datasets": layer_metrics},
+                        )
+                        write_layer_sensitivity_csv(csv_path, rows)
+                finally:
+                    restore_module_weights(model, snapshots)
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+            figure_path = plot_layer_sensitivity(rows, output_root)
+            write_layer_sensitivity_summary(summary_path, rows, args, output_root, figure_path)
+        finally:
+            del model
+            del tokenizer
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    figure_path = plot_layer_sensitivity(rows, output_root)
+    write_layer_sensitivity_summary(summary_path, rows, args, output_root, figure_path)
+    write_layer_sensitivity_csv(csv_path, rows)
+    print(csv_path)
+    print(summary_path)
+    if figure_path is not None:
+        print(figure_path)
 
 
 def configure_smoke(args: argparse.Namespace) -> None:
@@ -2562,32 +3730,40 @@ def run_quality(args: argparse.Namespace) -> None:
     selected_datasets = load_datasets(args)
     write_run_config(output_root, args, model_ids)
 
-    all_results: dict[tuple[str, str], dict[str, Any]] = {}
+    selected_policies = parse_dense_keep_policies(args)
+    scope_policy_pairs = build_scope_policy_pairs(selected_scopes, selected_policies)
+
+    all_results: dict[tuple[str, str, str], dict[str, Any]] = {}
     for model_label in selected_models:
         model_id = model_ids.get(model_label)
         if not model_id:
-            for mask_scope in selected_scopes:
-                all_results[(model_label, mask_scope)] = {
+            for mask_scope, dense_keep_policy in scope_policy_pairs:
+                all_results[(model_label, dense_keep_policy, mask_scope)] = {
                     "failed": True,
                     "error": f"unknown model label: {model_label}",
-                    "mask_stats": empty_mask_stats(mask_scope),
+                    "mask_stats": empty_mask_stats(mask_scope, args.mask_method, dense_keep_policy),
                     "metrics": {
                         dataset: failed_metric(dataset, f"unknown model label: {model_label}")
                         for dataset in selected_datasets
                     },
                 }
             continue
-        for mask_scope in selected_scopes:
-            print(f"[INFO] Running model={model_label} mask_scope={mask_scope}", flush=True)
+        for mask_scope, dense_keep_policy in scope_policy_pairs:
+            print(
+                f"[INFO] Running model={model_label} mask_scope={mask_scope} "
+                f"dense_keep_policy={dense_keep_policy}",
+                flush=True,
+            )
             result = run_one_scope(
                 model_label,
                 model_id,
                 mask_scope,
+                dense_keep_policy,
                 selected_datasets,
                 args,
                 output_root,
             )
-            all_results[(model_label, mask_scope)] = result
+            all_results[(model_label, dense_keep_policy, mask_scope)] = result
 
     rows = build_csv_rows(all_results, model_ids, args.dtype)
     csv_path = output_root / "structured_24_quality.csv"
@@ -2597,8 +3773,8 @@ def run_quality(args: argparse.Namespace) -> None:
     write_json(
         output_root / "all_metrics.json",
         {
-            f"{model_label}/{mask_scope}": result
-            for (model_label, mask_scope), result in all_results.items()
+            f"{model_label}/{dense_keep_policy}/{mask_scope}": result
+            for (model_label, dense_keep_policy, mask_scope), result in all_results.items()
         },
     )
     print(csv_path)
@@ -2712,6 +3888,41 @@ def build_parser() -> argparse.ArgumentParser:
     )
     quality.add_argument("--mask-scopes", default="none,attn,ffn,all")
     quality.add_argument(
+        "--mask-method",
+        choices=("magnitude", "activation_aware"),
+        default="magnitude",
+        help="2:4 selection rule: plain abs(weight) or activation-aware abs(weight) * input RMS.",
+    )
+    quality.add_argument(
+        "--dense-keep-policy",
+        choices=("none", "first_last_layers", "qkv", "top_error_layers", "top_error_modules"),
+        default="none",
+        help="Keep a small set of sensitive target Linear modules dense instead of applying 2:4.",
+    )
+    quality.add_argument(
+        "--dense-keep-policies",
+        default="",
+        help="Comma-separated dense keep policies to run in one invocation. Overrides --dense-keep-policy.",
+    )
+    quality.add_argument(
+        "--dense-keep-budget-fraction",
+        type=float,
+        default=0.15,
+        help="Maximum dense-kept Linear weight/FLOPs proxy fraction relative to all major target Linear modules.",
+    )
+    quality.add_argument(
+        "--dense-keep-first-n",
+        type=int,
+        default=2,
+        help="Number of first transformer layers to keep dense for first_last_layers.",
+    )
+    quality.add_argument(
+        "--dense-keep-last-n",
+        type=int,
+        default=2,
+        help="Number of last transformer layers to keep dense for first_last_layers.",
+    )
+    quality.add_argument(
         "--datasets",
         default="gsm8k,humaneval,math_reasoning,mtbench,dolly",
     )
@@ -2732,11 +3943,137 @@ def build_parser() -> argparse.ArgumentParser:
     quality.add_argument("--generation-batch-size", type=int, default=4)
     quality.add_argument("--humaneval-timeout", type=float, default=5.0)
     quality.add_argument(
+        "--calibration-num-examples",
+        type=int,
+        default=512,
+        help="Expected C4 prompt count in the activation RMS cache.",
+    )
+    quality.add_argument(
+        "--calibration-max-seq-len",
+        type=int,
+        default=512,
+        help="Max sequence length for activation-aware calibration forwards.",
+    )
+    quality.add_argument(
+        "--calibration-batch-size",
+        type=int,
+        default=1,
+        help="Batch size for activation-aware calibration forwards. Batch 1 avoids pad-token skew.",
+    )
+    quality.add_argument(
+        "--calibration-cache-root",
+        type=Path,
+        default=DEFAULT_C4_CALIBRATION_CACHE_ROOT,
+        help="Directory containing per-model activation RMS caches produced by calibrate-24.",
+    )
+    quality.add_argument(
         "--summarize-existing",
         action="store_true",
         help="Regenerate structured_24_quality.csv and summary.md from existing run directories.",
     )
     quality.set_defaults(func=run_quality)
+
+    calibrate = subparsers.add_parser(
+        "calibrate-24",
+        help="Collect reusable C4 activation RMS caches for activation-aware 2:4.",
+    )
+    calibrate.add_argument("--models", default="qwen3_8b,llama3_1_8b")
+    calibrate.add_argument(
+        "--model-id",
+        action="append",
+        default=[],
+        help="Override model id/path as LABEL=MODEL_ID. Can be repeated.",
+    )
+    calibrate.add_argument(
+        "--calibration-prompts",
+        type=Path,
+        default=DEFAULT_C4_CALIBRATION_PROMPTS,
+        help="JSONL prompt file with `prompt` or `text` fields.",
+    )
+    calibrate.add_argument(
+        "--calibration-num-examples",
+        type=int,
+        default=0,
+        help="Optional prompt subsample count. 0 uses the full prompt file.",
+    )
+    calibrate.add_argument("--calibration-max-seq-len", type=int, default=512)
+    calibrate.add_argument("--calibration-batch-size", type=int, default=1)
+    calibrate.add_argument("--dtype", choices=("bf16", "fp16"), default="bf16")
+    calibrate.add_argument("--device", default="cuda")
+    calibrate.add_argument("--output-root", type=Path, default=DEFAULT_C4_CALIBRATION_CACHE_ROOT)
+    calibrate.add_argument("--trust-remote-code", action="store_true")
+    calibrate.add_argument("--local-files-only", action="store_true")
+    calibrate.add_argument("--seed", type=int, default=42)
+    calibrate.set_defaults(func=run_calibrate_24)
+
+    layer = subparsers.add_parser(
+        "layer-sensitivity",
+        help="Measure per-layer activation-aware 2:4 quality sensitivity.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "For each selected transformer layer, keep all other layers dense "
+            "and apply activation-aware 2:4 only to that layer's main attention "
+            "and FFN Linear modules. Reports PPL ratio and accuracy drop against "
+            "a dense baseline."
+        ),
+    )
+    layer.add_argument("--models", default="qwen3_8b,llama3_1_8b")
+    layer.add_argument(
+        "--model-id",
+        action="append",
+        default=[],
+        help="Override model id/path as LABEL=MODEL_ID. Can be repeated.",
+    )
+    layer.add_argument(
+        "--layers",
+        default="",
+        help="Comma-separated layer indices or ranges, e.g. 0,1,4-7. Empty means all layers.",
+    )
+    layer.add_argument(
+        "--datasets",
+        default="mtbench,dolly,gsm8k,math_reasoning",
+    )
+    layer.add_argument("--gsm8k-num-examples", type=int, default=64)
+    layer.add_argument("--humaneval-num-examples", type=int, default=None)
+    layer.add_argument("--math-num-examples", type=int, default=64)
+    layer.add_argument("--mtbench-num-examples", type=int, default=40)
+    layer.add_argument("--dolly-num-examples", type=int, default=64)
+    layer.add_argument("--dtype", choices=("bf16", "fp16"), default="bf16")
+    layer.add_argument("--device", default="cuda")
+    layer.add_argument("--max-seq-len", type=int, default=2048)
+    layer.add_argument("--output-root", type=Path, default=None)
+    layer.add_argument("--smoke", action="store_true")
+    layer.add_argument("--trust-remote-code", action="store_true")
+    layer.add_argument("--local-files-only", action="store_true")
+    layer.add_argument("--save-masked-model", action="store_true")
+    layer.add_argument("--seed", type=int, default=42)
+    layer.add_argument("--generation-batch-size", type=int, default=4)
+    layer.add_argument("--humaneval-timeout", type=float, default=5.0)
+    layer.add_argument(
+        "--calibration-num-examples",
+        type=int,
+        default=512,
+        help="Expected C4 prompt count in the activation RMS cache.",
+    )
+    layer.add_argument(
+        "--calibration-max-seq-len",
+        type=int,
+        default=512,
+        help="Max sequence length for activation-aware calibration forwards.",
+    )
+    layer.add_argument(
+        "--calibration-batch-size",
+        type=int,
+        default=1,
+        help="Batch size for activation-aware calibration forwards. Batch 1 avoids pad-token skew.",
+    )
+    layer.add_argument(
+        "--calibration-cache-root",
+        type=Path,
+        default=DEFAULT_C4_CALIBRATION_CACHE_ROOT,
+        help="Directory containing per-model activation RMS caches produced by calibrate-24.",
+    )
+    layer.set_defaults(func=run_layer_sensitivity)
 
     return parser
 

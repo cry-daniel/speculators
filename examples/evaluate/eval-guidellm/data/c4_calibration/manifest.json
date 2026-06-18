@@ -1,0 +1,18 @@
+{
+  "dataset_id": "allenai/c4",
+  "config": "en",
+  "split": "train",
+  "text_field": "text",
+  "num_examples": 512,
+  "seed": 42,
+  "shuffle_buffer": 10000,
+  "min_chars": 64,
+  "output": "/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm/data/c4_calibration/c4_calibration_512_seed42.jsonl",
+  "stats": {
+    "count": 512,
+    "avg_prompt_chars": 2247.23828125,
+    "avg_prompt_words": 380.796875,
+    "min_prompt_chars": 127,
+    "max_prompt_chars": 84612
+  }
+}

@@ -42,6 +42,7 @@ from vllm.model_executor.layers.mamba.ops.ssu_dispatch import (
 from vllm.model_executor.model_loader import get_model_loader
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.sequence import IntermediateTensors
+from vllm.speclink_structured_24 import apply_structured_24_from_env
 from vllm.tasks import SupportedTask
 from vllm.utils.mem_utils import DeviceMemoryProfiler, format_gib
 from vllm.utils.torch_utils import STR_DTYPE_TO_TORCH_DTYPE
@@ -276,6 +277,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     self.model, self.vllm_config, self.device
                 )
 
+            apply_structured_24_from_env(
+                self.model,
+                logger=logger,
+                context="v1_gpu_model_runner_v2_target",
+            )
             if self.use_aux_hidden_state_outputs:
                 assert self.speculative_config is not None
                 set_eagle3_aux_hidden_state_layers(self.model, self.speculative_config)

@@ -1,0 +1,7 @@
+{
+  "count": 512,
+  "avg_prompt_chars": 2247.23828125,
+  "avg_prompt_words": 380.796875,
+  "min_prompt_chars": 127,
+  "max_prompt_chars": 84612
+}
