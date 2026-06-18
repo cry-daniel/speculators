@@ -1,0 +1,24 @@
+task: longbenchv2_generative
+dataset_path: recursal/longbench-v2
+test_split: train
+output_type: generate_until
+doc_to_text: "Please read the following text and answer the question below.\n\n<text>\n{{context}}\n</text>\n\nWhat is the correct answer to this question: {{question.strip()}}\nChoices:\n(A) {{choices[0]}}\n(B) {{choices[1]}}\n(C) {{choices[2]}}\n(D) {{choices[3]}}\n\nAnswer with only one letter, A, B, C, or D.\nAnswer:"
+doc_to_target: "{{answer}}"
+generation_kwargs:
+  until:
+    - "\n"
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+    ignore_punctuation: true
+    ignore_case: true
+filter_list:
+  - name: get_response
+    filter:
+      - function: regex
+        regex_pattern: "([A-Da-d])"
+      - function: take_first
+metadata:
+  version: 0.0
+  protocol: custom_generative

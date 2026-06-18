@@ -15,7 +15,7 @@ To build and serve the documentation locally for development:
 
 ```bash
 # Navigate to the project root
-cd /path/to/speculators
+cd .
 
 # Start the development server with live reload
 mkdocs serve

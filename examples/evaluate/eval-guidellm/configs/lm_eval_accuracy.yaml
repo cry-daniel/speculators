@@ -1,0 +1,60 @@
+models:
+  qwen3_8b:
+    model_path: ../models/qwen3-8b
+    tokenizer_path: ../models/qwen3-8b
+    speculator_path: ../models/qwen3-8b-eagle3-speculator
+  llama3_1_8b:
+    model_path: ../models/llama-3.1-8b-instruct
+    tokenizer_path: ../models/llama-3.1-8b-instruct
+    speculator_path: ../models/llama-3.1-8b-eagle3-speculator
+
+modes:
+  dense: [dense_ar]
+  speculative: [eagle3_dense]
+  hybrid:
+    - activation_aware
+    - token_dense_t00
+    - token_dense_t01
+    - token_dense_t02
+    - token_dense_t03
+    - token_dense_t04
+    - token_dense_t05
+    - token_dense_t06
+    - token_dense_t07
+    - token_dense_t08
+    - token_dense_t09
+    - token_dense_t10
+  all:
+    - dense_ar
+    - eagle3_dense
+    - activation_aware
+    - token_dense_t00
+    - token_dense_t01
+    - token_dense_t02
+    - token_dense_t03
+    - token_dense_t04
+    - token_dense_t05
+    - token_dense_t06
+    - token_dense_t07
+    - token_dense_t08
+    - token_dense_t09
+    - token_dense_t10
+
+tasks:
+  smoke:
+    - logiqa_generative
+    - gsm8k_cot
+  all:
+    - agieval_logiqa_en
+    - logiqa_generative
+    - gsm8k_cot
+    - hendrycks_math
+    - mmlu_generative
+    - humaneval_instruct
+    - longbenchv2_generative
+
+default_output_dir: examples/evaluate/eval-guidellm/results/token_dense_lm_eval
+default_num_spec_tokens: 8
+default_max_context_length: 4096
+default_max_new_tokens: 512
+default_seed: 42

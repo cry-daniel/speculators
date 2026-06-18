@@ -14,7 +14,7 @@ conda activate spec
 
 Known working environment:
 
-- Python: `/ACALAB/stu1/miniconda3/envs/spec/bin/python`
+- Python: `${CONDA_PREFIX}/bin/python`
 - vLLM: `0.20.0`, installed editable from this repo's `vllm/`
 - GuideLLM: `0.6.0`
 - Torch: `2.11.0+cu130`
@@ -23,15 +23,15 @@ Known working environment:
 If recreating the environment, use Python 3.12, install GuideLLM and Hugging
 Face Hub, then install this repo and the vendored vLLM editable. Keep vLLM's
 CUDA build aligned with PyTorch's CUDA 13.0 stack; do not build it with a newer
-system CUDA such as `/usr/local/cuda-13.2`, because that can produce PTX the
+system CUDA such as `${SYSTEM_CUDA_HOME}`, because that can produce PTX the
 current driver cannot run.
 
 ```bash
 conda create -n spec python=3.12
 conda activate spec
 pip install guidellm huggingface-hub
-pip install -e /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators --no-deps
-pip install -r /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/vllm/requirements/build/cuda.txt
+pip install -e . --no-deps
+pip install -r ./vllm/requirements/build/cuda.txt
 pip install \
   nvidia-cuda-nvcc==13.0.88 \
   nvidia-nvvm==13.0.88 \
@@ -39,21 +39,22 @@ pip install \
   nvidia-cuda-cccl==13.0.85
 conda install -n spec -y -c conda-forge gcc_linux-64=13 gxx_linux-64=13
 
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators
-CU13=/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/nvidia/cu13
+cd .
+CU13=${CONDA_PREFIX}/lib/python3.12/site-packages/nvidia/cu13
+LIBCUDA_SO="${LIBCUDA_SO:?set LIBCUDA_SO to the system libcuda.so.1 path}"
 ln -sfn lib "${CU13}/lib64"
 ln -sfn libcudart.so.13 "${CU13}/lib/libcudart.so"
 ln -sfn libnvJitLink.so.13 "${CU13}/lib/libnvJitLink.so"
 ln -sfn libnvrtc.so.13 "${CU13}/lib/libnvrtc.so"
 ln -sfn libnvvm.so.4 "${CU13}/lib/libnvvm.so"
 mkdir -p "${CU13}/lib/stubs"
-ln -sfn /usr/lib/x86_64-linux-gnu/libcuda.so.1 "${CU13}/lib/stubs/libcuda.so"
+ln -sfn ${LIBCUDA_SO} "${CU13}/lib/stubs/libcuda.so"
 
 CUDA_HOME="${CU13}" \
 CUDACXX="${CU13}/bin/nvcc" \
-CUDAHOSTCXX=/ACALAB/stu1/miniconda3/envs/spec/bin/x86_64-conda-linux-gnu-g++ \
-CC=/ACALAB/stu1/miniconda3/envs/spec/bin/x86_64-conda-linux-gnu-gcc \
-CXX=/ACALAB/stu1/miniconda3/envs/spec/bin/x86_64-conda-linux-gnu-g++ \
+CUDAHOSTCXX=${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-g++ \
+CC=${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-gcc \
+CXX=${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-g++ \
 PATH="${CU13}/bin:${PATH}" \
 LD_LIBRARY_PATH="${CU13}/lib:${LD_LIBRARY_PATH:-}" \
 TORCH_CUDA_ARCH_LIST=12.0 \
@@ -74,28 +75,28 @@ the Hugging Face ID and will use the local Hugging Face cache when available.
 
 ```bash
 BASE_MODEL=Qwen/Qwen3-8B
-EAGLE3_SPECULATOR_MODEL=/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-eagle3-speculator
-PEAGLE_SPECULATOR_MODEL=/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-peagle-speculator
+EAGLE3_SPECULATOR_MODEL=../models/qwen3-8b-eagle3-speculator
+PEAGLE_SPECULATOR_MODEL=../models/qwen3-8b-peagle-speculator
 ```
 
 The current local paths are:
 
-- EAGLE3: `/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-eagle3-speculator`
-- P-EAGLE: `/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-peagle-speculator`
-- Llama-3.1-8B base: `/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/llama-3.1-8b-instruct`
-- Llama-3.1-8B FastDraft: `/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/llama-3.1-8b-fastdraft-150m-int8-hf`
-- Llama-3.1-8B EAGLE3: `/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/llama-3.1-8b-eagle3-speculator`
+- EAGLE3: `../models/qwen3-8b-eagle3-speculator`
+- P-EAGLE: `../models/qwen3-8b-peagle-speculator`
+- Llama-3.1-8B base: `../models/llama-3.1-8b-instruct`
+- Llama-3.1-8B FastDraft: `../models/llama-3.1-8b-fastdraft-150m-int8-hf`
+- Llama-3.1-8B EAGLE3: `../models/llama-3.1-8b-eagle3-speculator`
 
 To download the speculator checkpoints again:
 
 ```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
+cd examples/evaluate/eval-guidellm
 ./download_qwen3_8b_speculators.sh
 ./download_llama_3_1_8b_eagle3_speculator.sh
 ```
 
 The base model is not copied into `../models` by default. Override it with
-`QWEN3_8B_MODEL=/path/to/local/qwen3-8b` only if you want to force a specific
+`QWEN3_8B_MODEL=../models/qwen3-8b` only if you want to force a specific
 local base model directory.
 
 ## Vendored vLLM Source and Install
@@ -103,13 +104,13 @@ local base model directory.
 vLLM is vendored as a full source tree inside this repository:
 
 ```text
-/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/vllm
+./vllm
 ```
 
 This tree was imported from upstream vLLM `v0.20.0` and pushed to `main` in
 commit `9def519`. Future vLLM edits for these experiments should be made in
 `speculators/vllm`, not in `site-packages` and not in the older external
-`/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/vllm` checkout.
+`../vllm` checkout.
 
 Current local vLLM changes in `speculators/vllm` are Python-only:
 
@@ -156,7 +157,7 @@ machine uses PyTorch `2.11.0+cu130`, so point the vLLM build at the conda
 environment's CUDA 13.0 compiler stack instead of the system CUDA:
 
 ```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators
+cd .
 conda run -n spec python -m pip install -r vllm/requirements/build/cuda.txt
 conda run -n spec python -m pip install \
   nvidia-cuda-nvcc==13.0.88 \
@@ -165,20 +166,21 @@ conda run -n spec python -m pip install \
   nvidia-cuda-cccl==13.0.85
 conda install -n spec -y -c conda-forge gcc_linux-64=13 gxx_linux-64=13
 
-CU13=/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/nvidia/cu13
+CU13=${CONDA_PREFIX}/lib/python3.12/site-packages/nvidia/cu13
+LIBCUDA_SO="${LIBCUDA_SO:?set LIBCUDA_SO to the system libcuda.so.1 path}"
 ln -sfn lib "${CU13}/lib64"
 ln -sfn libcudart.so.13 "${CU13}/lib/libcudart.so"
 ln -sfn libnvJitLink.so.13 "${CU13}/lib/libnvJitLink.so"
 ln -sfn libnvrtc.so.13 "${CU13}/lib/libnvrtc.so"
 ln -sfn libnvvm.so.4 "${CU13}/lib/libnvvm.so"
 mkdir -p "${CU13}/lib/stubs"
-ln -sfn /usr/lib/x86_64-linux-gnu/libcuda.so.1 "${CU13}/lib/stubs/libcuda.so"
+ln -sfn ${LIBCUDA_SO} "${CU13}/lib/stubs/libcuda.so"
 
 CUDA_HOME="${CU13}" \
 CUDACXX="${CU13}/bin/nvcc" \
-CUDAHOSTCXX=/ACALAB/stu1/miniconda3/envs/spec/bin/x86_64-conda-linux-gnu-g++ \
-CC=/ACALAB/stu1/miniconda3/envs/spec/bin/x86_64-conda-linux-gnu-gcc \
-CXX=/ACALAB/stu1/miniconda3/envs/spec/bin/x86_64-conda-linux-gnu-g++ \
+CUDAHOSTCXX=${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-g++ \
+CC=${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-gcc \
+CXX=${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-g++ \
 PATH="${CU13}/bin:${PATH}" \
 LD_LIBRARY_PATH="${CU13}/lib:${LD_LIBRARY_PATH:-}" \
 TORCH_CUDA_ARCH_LIST=12.0 \
@@ -196,7 +198,7 @@ can reuse existing build artifacts if `vllm/.deps` and the build cache are kept.
 Verify from a directory other than the speculators repo root, for example:
 
 ```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
+cd examples/evaluate/eval-guidellm
 conda run -n spec python -c "import pathlib, vllm; print(pathlib.Path(vllm.__file__).resolve())"
 conda run -n spec vllm --help
 ```
@@ -204,7 +206,7 @@ conda run -n spec vllm --help
 Expected import path prefix:
 
 ```text
-/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/vllm/vllm/
+./vllm/vllm/
 ```
 
 Do not use `VLLM_USE_PRECOMPILED=1` for this workflow. The point of the local
@@ -217,7 +219,7 @@ into `examples/evaluate/eval-guidellm` before validating the import path.
 Older runs left direct-edit residue under:
 
 ```text
-/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/vllm/
+${CONDA_PREFIX}/lib/python3.12/site-packages/vllm/
 ```
 
 That directory should not exist after the editable install. If it reappears and
@@ -230,7 +232,7 @@ subdirectories and retry:
 
 ```bash
 find vllm/.deps -maxdepth 1 -type d \( -name '*-subbuild' -o -name '*-build' \) -exec rm -rf {} +
-CU13=/ACALAB/stu1/miniconda3/envs/spec/lib/python3.12/site-packages/nvidia/cu13
+CU13=${CONDA_PREFIX}/lib/python3.12/site-packages/nvidia/cu13
 CUDA_HOME="${CU13}" CUDACXX="${CU13}/bin/nvcc" TORCH_CUDA_ARCH_LIST=12.0 \
 MAX_JOBS=8 NVCC_THREADS=2 SETUPTOOLS_SCM_PRETEND_VERSION=0.20.0 \
   conda run -n spec python -m pip install -e ./vllm --no-deps --no-build-isolation --force-reinstall
@@ -251,7 +253,7 @@ spec_config {'method': 'eagle3', 'num_speculative_tokens': 4, 'parallel_drafting
 For the current smoke benchmark, use the repo-local `math_reasoning.jsonl` file:
 
 ```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
+cd examples/evaluate/eval-guidellm
 mkdir -p data
 hf download RedHatAI/speculator_benchmarks \
   --repo-type dataset \
@@ -263,7 +265,7 @@ hf download RedHatAI/speculator_benchmarks \
 Dataset path:
 
 ```text
-/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm/data/math_reasoning.jsonl
+examples/evaluate/eval-guidellm/data/math_reasoning.jsonl
 ```
 
 The evaluation scripts also accept Hugging Face dataset syntax:
@@ -282,13 +284,13 @@ activation-RMS cache for activation-aware masking. Do not implicitly calibrate
 from the evaluation datasets. The fixed prompt sample is:
 
 ```text
-/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm/data/c4_calibration/c4_calibration_512_seed42.jsonl
+examples/evaluate/eval-guidellm/data/c4_calibration/c4_calibration_512_seed42.jsonl
 ```
 
 Prepare or refresh the fixed C4 prompt sample with:
 
 ```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators
+cd .
 conda run -n spec python examples/evaluate/eval-guidellm/scripts/prepare_c4_calibration_dataset.py \
   --num-examples 512 \
   --seed 42 \
@@ -301,7 +303,7 @@ Run model-specific calibration once, then reuse the generated RMS cache for
 later experiments:
 
 ```bash
-MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
+MPLCONFIGDIR=temp/matplotlib conda run -n spec python -u \
   examples/evaluate/eval-guidellm/scripts/residual_24_feasibility.py calibrate-24 \
   --models qwen3_8b,llama3_1_8b \
   --calibration-prompts examples/evaluate/eval-guidellm/data/c4_calibration/c4_calibration_512_seed42.jsonl \
@@ -314,49 +316,18 @@ MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
 The default cache root is:
 
 ```text
-/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm/data/c4_calibration/activation_rms/c4_512_seed42_bf16_max512
+examples/evaluate/eval-guidellm/data/c4_calibration/activation_rms/c4_512_seed42_bf16_max512
 ```
 
-For Wanda++-style accuracy recovery experiments, build compact reusable mask
-caches from the same fixed C4 prompt sample. This path does not rewrite model
-checkpoints. It stores 2:4 masks and optional output-row scales, then vLLM
-applies them to the TLM/base model at load time.
+Run the current accuracy-first speculative serving comparison with token-dense
+thresholds only:
 
 ```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators
-MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
-  examples/evaluate/eval-guidellm/scripts/prepare_wandapp_structured_24_cache.py \
+cd .
+MPLCONFIGDIR=temp/matplotlib conda run -n spec python -u \
+  examples/evaluate/eval-guidellm/scripts/run_token_dense_accuracy.py \
   --models qwen3_8b,llama3_1_8b \
-  --methods wandapp_rgs,wandapp_ro \
-  --calibration-prompts examples/evaluate/eval-guidellm/data/c4_calibration/c4_calibration_512_seed42.jsonl \
-  --num-prompts 128 \
-  --max-seq-len 128 \
-  --max-tokens-per-module 256 \
-  --output-root examples/evaluate/eval-guidellm/data/c4_calibration/wandapp_masks
-```
-
-The default Wanda++-style cache root is:
-
-```text
-/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm/data/c4_calibration/wandapp_masks
-```
-
-The two cache methods are:
-
-- `wandapp_rgs`: C4 input activations plus a local output-gradient sensitivity
-  multiplier select the 2 kept weights in every 4-wide input group.
-- `wandapp_ro`: uses the same mask and adds an output-row least-squares scale.
-  This is an RO-lite correction cache, not a full block-level Wanda++ optimizer
-  and not a saved sparse checkpoint.
-
-Run the accuracy-first speculative serving comparison with:
-
-```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators
-MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
-  examples/evaluate/eval-guidellm/scripts/run_wandapp_accuracy.py \
-  --models qwen3_8b,llama3_1_8b \
-  --methods activation_aware,token_dense_t07,wandapp_rgs,wandapp_ro \
+  --methods token_dense_t00,token_dense_t01,token_dense_t02,token_dense_t03,token_dense_t04,token_dense_t05,token_dense_t06,token_dense_t07,token_dense_t08,token_dense_t09,token_dense_t10 \
   --datasets gsm8k,math_reasoning \
   --gsm8k-num-examples 64 \
   --math-num-examples 64 \
@@ -364,8 +335,7 @@ MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
   --accuracy-concurrency 8 \
   --max-num-seqs 8 \
   --num-spec-tokens 8 \
-  --cache-root examples/evaluate/eval-guidellm/data/c4_calibration/wandapp_masks \
-  --output-root examples/evaluate/eval-guidellm/results/structured_24_wandapp_accuracy_TIMESTAMP
+  --output-root examples/evaluate/eval-guidellm/results/token_dense_accuracy_TIMESTAMP
 ```
 
 `token_dense_tXX` is the current token-level routing experiment. It keeps the
@@ -384,20 +354,37 @@ first two transformer layers dense and applies the selected 2:4 method to all
 remaining target-model layers:
 
 ```bash
-MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
-  examples/evaluate/eval-guidellm/scripts/run_wandapp_accuracy.py \
-  --methods activation_aware,wandapp_rgs,wandapp_ro,activation_aware_keep_first_2,wandapp_rgs_keep_first_2,wandapp_ro_keep_first_2 \
-  --cache-root examples/evaluate/eval-guidellm/data/c4_calibration/wandapp_masks \
-  --output-root examples/evaluate/eval-guidellm/results/structured_24_wandapp_accuracy_TIMESTAMP \
+MPLCONFIGDIR=temp/matplotlib conda run -n spec python -u \
+  examples/evaluate/eval-guidellm/scripts/run_token_dense_accuracy.py \
+  --methods activation_aware,activation_aware_keep_first_2,token_dense_t00,token_dense_t01,token_dense_t02,token_dense_t03,token_dense_t04,token_dense_t05,token_dense_t06,token_dense_t07,token_dense_t08,token_dense_t09,token_dense_t10 \
+  --output-root examples/evaluate/eval-guidellm/results/token_dense_accuracy_TIMESTAMP \
   --resume
 ```
+
+For LMeval accuracy, use the local wrapper that starts the same vLLM serving
+path and then calls EleutherAI lm-evaluation-harness:
+
+```bash
+cd .
+examples/evaluate/eval-guidellm/scripts/run_lm_eval_accuracy.sh \
+  --mode all \
+  --task smoke \
+  --limit 4 \
+  --output-dir examples/evaluate/eval-guidellm/results/token_dense_llama_math_gsm8k_thresholds16_20260617_145507/lm_eval
+```
+
+`--mode all` expands to `dense_ar`, `eagle3_dense`, `activation_aware`, and
+`token_dense_t00` through `token_dense_t10`. For LogiQA, use
+`agieval_logiqa_en` for the official multiple-choice slot and
+`logiqa_generative` for the generate-until path; the older built-in `logiqa`
+task depends on a dataset script that the current `datasets` package rejects.
 
 Smoke and sanity outputs for this path should go under `results.bak/`, for
 example:
 
 ```bash
-MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
-  examples/evaluate/eval-guidellm/scripts/run_wandapp_accuracy.py --smoke
+MPLCONFIGDIR=temp/matplotlib conda run -n spec python -u \
+  examples/evaluate/eval-guidellm/scripts/run_token_dense_accuracy.py --smoke
 ```
 
 `quality` and `layer-sensitivity` load this cache by default when they need
@@ -406,7 +393,7 @@ instead of falling back to evaluation prompts. A standard C4-calibrated layer
 sensitivity run is:
 
 ```bash
-MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
+MPLCONFIGDIR=temp/matplotlib conda run -n spec python -u \
   examples/evaluate/eval-guidellm/scripts/residual_24_feasibility.py layer-sensitivity \
   --models qwen3_8b,llama3_1_8b \
   --datasets mtbench,dolly,gsm8k,math_reasoning \
@@ -427,8 +414,8 @@ speculative decoding, while PPL is dense-vs-sparse TLM reference loss using the
 same mask policy.
 
 ```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators
-MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
+cd .
+MPLCONFIGDIR=temp/matplotlib conda run -n spec python -u \
   examples/evaluate/eval-guidellm/scripts/run_structured_24_spec_quality.py \
   --models qwen3_8b,llama3_1_8b \
   --datasets mtbench,dolly,gsm8k,math_reasoning \
@@ -446,17 +433,17 @@ Useful variants:
 
 ```bash
 # Smoke and sanity artifacts go under results.bak/.
-MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
+MPLCONFIGDIR=temp/matplotlib conda run -n spec python -u \
   examples/evaluate/eval-guidellm/scripts/run_structured_24_spec_quality.py --smoke
 
 # Resume an interrupted full run.
-MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
+MPLCONFIGDIR=temp/matplotlib conda run -n spec python -u \
   examples/evaluate/eval-guidellm/scripts/run_structured_24_spec_quality.py \
   --output-root examples/evaluate/eval-guidellm/results/structured_24_spec_tlm_eagle3_k8_TIMESTAMP \
   --resume
 
 # Re-run only the all-sparse and first/last dense-keep comparison.
-MPLCONFIGDIR=/tmp/matplotlib conda run -n spec python -u \
+MPLCONFIGDIR=temp/matplotlib conda run -n spec python -u \
   examples/evaluate/eval-guidellm/scripts/run_structured_24_spec_quality.py \
   --skip-layer-sensitivity \
   --output-root examples/evaluate/eval-guidellm/results/structured_24_spec_tlm_eagle3_k8_dense_keep_TIMESTAMP
@@ -467,17 +454,15 @@ The vLLM hook is disabled by default and is controlled by:
 ```text
 SPECLINK_STRUCTURED_24_ENABLE=1
 SPECLINK_STRUCTURED_24_MODEL_LABEL=qwen3_8b|llama3_1_8b
-SPECLINK_STRUCTURED_24_CALIBRATION_CACHE_ROOT=/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm/data/c4_calibration/activation_rms/c4_512_seed42_bf16_max512
+SPECLINK_STRUCTURED_24_CALIBRATION_CACHE_ROOT=examples/evaluate/eval-guidellm/data/c4_calibration/activation_rms/c4_512_seed42_bf16_max512
 SPECLINK_STRUCTURED_24_POLICY=dense|single_layer|all_sparse|keep_first|keep_last|keep_first_last
 SPECLINK_STRUCTURED_24_LAYER_INDEX=0
 SPECLINK_STRUCTURED_24_KEEP_N=1
-SPECLINK_STRUCTURED_24_STATS_PATH=/path/to/vllm_structured_24_stats.json
-SPECLINK_STRUCTURED_24_MASK_CACHE=/path/to/qwen3_8b_wandapp_ro.pt
-SPECLINK_STRUCTURED_24_CACHE_STRICT=1
+SPECLINK_STRUCTURED_24_STATS_PATH=temp/vllm_structured_24_stats.json
 SPECLINK_TOKEN_DENSE_ENABLE=1
 SPECLINK_TOKEN_DENSE_MODE=high_confidence_dense
 SPECLINK_TOKEN_DENSE_THRESHOLD=0.7
-SPECLINK_TOKEN_DENSE_STATS_PATH=/path/to/token_dense_stats.jsonl
+SPECLINK_TOKEN_DENSE_STATS_PATH=temp/token_dense_stats.jsonl
 ```
 
 Final files from the speculative runner:
@@ -495,26 +480,26 @@ Final files from the speculative runner:
 Run commands from:
 
 ```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
+cd examples/evaluate/eval-guidellm
 ```
 
 By default, experiment outputs go under:
 
 ```text
-/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm/results/
+examples/evaluate/eval-guidellm/results/
 ```
 
 `run_evaluation.sh` defaults to `results/eval_results_TIMESTAMP/`. Override the
 root with either:
 
 ```bash
-RESULTS_DIR=/path/to/results ./run_evaluation.sh -c ./configs/qwen3-8b-peagle.env
+RESULTS_DIR=results/custom ./run_evaluation.sh -c ./configs/qwen3-8b-peagle.env
 ```
 
 or:
 
 ```bash
-./run_evaluation.sh -c ./configs/qwen3-8b-peagle.env --results-dir /path/to/results
+./run_evaluation.sh -c ./configs/qwen3-8b-peagle.env --results-dir results/custom
 ```
 
 EAGLE3 smoke:
@@ -569,7 +554,7 @@ For the Llama-3.1-8B comparison of AR, FastDraft, Smurfs dynamic K, and EAGLE3,
 use:
 
 ```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
+cd examples/evaluate/eval-guidellm
 conda run -n spec python ./scripts/run_llama31_vllm_fastdraft_smurfs_eagle3_matrix.py
 ```
 
@@ -623,7 +608,7 @@ output experiment requested for EAGLE3 and P-EAGLE:
 Run it from `examples/evaluate/eval-guidellm`:
 
 ```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
+cd examples/evaluate/eval-guidellm
 conda run -n spec bash ./motivation_breakdown.sh
 ```
 
@@ -632,7 +617,7 @@ The script no longer accepts `--vllm-dir`, `--skip-vllm-setup`, or
 `speculators/vllm`. At startup it verifies that `import vllm` resolves under:
 
 ```text
-/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/vllm/vllm/
+./vllm/vllm/
 ```
 
 Outputs are written under `results/motivation_breakdown_TIMESTAMP/`, including:
@@ -675,7 +660,7 @@ The vLLM trace is off by default and is enabled only by:
 
 ```bash
 SPECLINK_TRACE_CONFIDENCE=1
-SPECLINK_TRACE_OUTPUT=/path/to/trace.jsonl
+SPECLINK_TRACE_OUTPUT=temp/trace.jsonl
 SPECLINK_TRACE_RUN_ID=qwen3_8b_eagle3_k4
 SPECLINK_TRACE_DATASET_LABEL=math
 SPECLINK_TRACE_MODEL_LABEL=qwen3_8b
@@ -694,7 +679,7 @@ analysis. `token_text` is left null to avoid tokenizer overhead in the hot path.
 Run from `examples/evaluate/eval-guidellm`:
 
 ```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
+cd examples/evaluate/eval-guidellm
 conda run -n spec bash ./run_speclink_confidence_acceptance.sh
 ```
 
@@ -725,7 +710,7 @@ Defaults:
 MTBench setup:
 
 ```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
+cd examples/evaluate/eval-guidellm
 conda run -n spec python ./prepare_mt_bench_dataset.py --force
 ```
 
@@ -760,26 +745,26 @@ conda run -n spec bash ./run_speclink_confidence_acceptance.sh --single-case --s
 # Llama-3.1-8B EAGLE3 K=8 only
 MODEL_LABEL=llama3_1_8b \
 BASE_MODEL=meta-llama/Llama-3.1-8B-Instruct \
-EAGLE3_SPECULATOR_MODEL=/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/llama-3.1-8b-eagle3-speculator \
+EAGLE3_SPECULATOR_MODEL=../models/llama-3.1-8b-eagle3-speculator \
 METHODS=eagle3 MAIN_NUM_SPEC_TOKENS=8 PORT=8035 \
 conda run -n spec bash ./run_speclink_confidence_acceptance.sh --single-case --main-only
 
 # Qwen3-8B MTBench, EAGLE3 K=8 only
 DATASET_LABEL=mtbench \
-DATASET=/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm/data/mt_bench.jsonl \
+DATASET=examples/evaluate/eval-guidellm/data/mt_bench.jsonl \
 MODEL_LABEL=qwen3_8b \
 BASE_MODEL=Qwen/Qwen3-8B \
-EAGLE3_SPECULATOR_MODEL=/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-eagle3-speculator \
+EAGLE3_SPECULATOR_MODEL=../models/qwen3-8b-eagle3-speculator \
 METHODS=eagle3 MAIN_NUM_SPEC_TOKENS=8 MAIN_PROMPTS=80 MAIN_MAX_TOKENS=128 \
 REQUEST_CONCURRENCY=1 PORT=8036 \
 conda run -n spec bash ./run_speclink_confidence_acceptance.sh --single-case --main-only
 
 # Llama-3.1-8B MTBench, EAGLE3 K=8 only
 DATASET_LABEL=mtbench \
-DATASET=/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm/data/mt_bench.jsonl \
+DATASET=examples/evaluate/eval-guidellm/data/mt_bench.jsonl \
 MODEL_LABEL=llama3_1_8b \
 BASE_MODEL=meta-llama/Llama-3.1-8B-Instruct \
-EAGLE3_SPECULATOR_MODEL=/ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/llama-3.1-8b-eagle3-speculator \
+EAGLE3_SPECULATOR_MODEL=../models/llama-3.1-8b-eagle3-speculator \
 METHODS=eagle3 MAIN_NUM_SPEC_TOKENS=8 MAIN_PROMPTS=80 MAIN_MAX_TOKENS=128 \
 REQUEST_CONCURRENCY=1 PORT=8037 \
 conda run -n spec bash ./run_speclink_confidence_acceptance.sh --single-case --main-only
@@ -851,7 +836,7 @@ draft-token count jitter figure. It uses normal vLLM speculative decoding with
 Run from `examples/evaluate/eval-guidellm`:
 
 ```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators/examples/evaluate/eval-guidellm
+cd examples/evaluate/eval-guidellm
 conda run -n spec bash ./run_acceptance_jitter.sh
 ```
 
@@ -987,7 +972,7 @@ trace-based experiment runner.
 Run the current milestone from the repo root:
 
 ```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators
+cd .
 conda run -n spec python -m tools.speclink_cv.run_trace_experiment \
   --trace-root examples/evaluate/eval-guidellm/temp/accepted_count_jitter_work_TIMESTAMP \
   --output-root examples/evaluate/eval-guidellm/results/speclink_cv_TIMESTAMP \
@@ -1058,8 +1043,8 @@ SPECLINK_CV_MAX_VERIFY_SEQS_PER_STEP=0
 SPECLINK_CV_MAX_QUEUE_WAIT_MS=2
 SPECLINK_CV_UTIL_THRESHOLD=0.6
 SPECLINK_CV_CALIBRATION_PATH=
-SPECLINK_CV_LOG_JSONL=/path/to/events.jsonl
-SPECLINK_CV_PROFILE_JSONL=/path/to/profile.jsonl
+SPECLINK_CV_LOG_JSONL=temp/events.jsonl
+SPECLINK_CV_PROFILE_JSONL=temp/profile.jsonl
 SPECLINK_CV_DEBUG_DUMP=0
 ```
 
@@ -1120,7 +1105,7 @@ Reusable GPU smoke command:
 
 ```bash
 conda run -n spec python tools/speclink_cv/live_correctness_smoke.py \
-  --speculator-model /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-eagle3-speculator \
+  --speculator-model ../models/qwen3-8b-eagle3-speculator \
   --max-tokens 32 \
   --output-json examples/evaluate/eval-guidellm/temp/speclink_cv_live_smoke.json \
   --event-jsonl examples/evaluate/eval-guidellm/temp/speclink_cv_live_smoke_events.jsonl \
@@ -1138,7 +1123,7 @@ For batched correctness, run the same smoke over repo-local prompts:
 
 ```bash
 conda run -n spec python tools/speclink_cv/live_correctness_smoke.py \
-  --speculator-model /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/models/qwen3-8b-eagle3-speculator \
+  --speculator-model ../models/qwen3-8b-eagle3-speculator \
   --prompts-jsonl examples/evaluate/eval-guidellm/data/math_reasoning.jsonl \
   --num-prompts 8 \
   --max-num-seqs 8 \
@@ -1177,7 +1162,7 @@ and a failed API server can leave an EngineCore process holding GPU memory.
 Smoke command:
 
 ```bash
-cd /ACALAB/stu1/chenruiyang/Code/LLM/SpecLink/speculators
+cd .
 conda run -n spec python -u examples/evaluate/eval-guidellm/scripts/run_speclink_cv_guidellm_matrix.py \
   --smoke \
   --max-requests 1 \
