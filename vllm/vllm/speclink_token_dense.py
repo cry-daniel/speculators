@@ -33,7 +33,7 @@ _verify_dense_mask: ContextVar[torch.Tensor | None] = ContextVar(
     "speclink_token_dense_verify_mask", default=None
 )
 
-_pending_scores: defaultdict[str, deque[list[float]]] = defaultdict(deque)
+_pending_scores: defaultdict[str, deque[list[float | None]]] = defaultdict(deque)
 _lock = threading.Lock()
 _stats_accum: dict[str, Any] = {
     "steps": 0,
@@ -177,22 +177,31 @@ def record_draft_scores(
         return
 
     draft_token_ids = draft_token_ids[:batch_size, :num_spec_tokens]
-    per_req_scores = [[1.0] * num_spec_tokens for _ in range(batch_size)]
+    per_req_scores: list[list[float | None]] = [
+        [None] * num_spec_tokens for _ in range(batch_size)
+    ]
     for pos, logits in enumerate(logits_by_position[:num_spec_tokens]):
         logits = logits[:batch_size].detach().float()
         selected = draft_token_ids[:batch_size, pos].to(
             device=logits.device, dtype=torch.long
         )
-        log_probs = torch.log_softmax(logits, dim=-1)
-        selected_logprob = log_probs.gather(1, selected.view(-1, 1)).squeeze(1)
+        valid = (selected >= 0) & (selected < logits.shape[-1])
+        if not bool(valid.any().item()):
+            continue
+        valid_indices = valid.nonzero(as_tuple=False).squeeze(1)
+        log_probs = torch.log_softmax(logits.index_select(0, valid_indices), dim=-1)
+        selected_logprob = log_probs.gather(
+            1, selected.index_select(0, valid_indices).view(-1, 1)
+        ).squeeze(1)
         selected_prob = selected_logprob.exp().detach().cpu().tolist()
-        for req_idx, score in enumerate(selected_prob):
+        for req_idx, score in zip(valid_indices.detach().cpu().tolist(), selected_prob):
             per_req_scores[req_idx][pos] = float(score)
 
     req_ids = ctx["req_ids"]
     with _lock:
         for req_idx in range(batch_size):
-            _pending_scores[req_ids[req_idx]].append(per_req_scores[req_idx])
+            if any(score is not None for score in per_req_scores[req_idx]):
+                _pending_scores[req_ids[req_idx]].append(per_req_scores[req_idx])
 
 
 def _write_stats(record: dict[str, Any]) -> None:
@@ -257,12 +266,12 @@ def build_verify_dense_mask(
                     dense_draft_tokens += 1
                     per_req_dense += 1
                     continue
-                score = float(scores[pos]) if pos < len(scores) else None
+                score = scores[pos] if pos < len(scores) else None
                 if score is None:
                     missing_score_tokens += 1
                     use_dense = True
                 else:
-                    use_dense = score >= cutoff
+                    use_dense = float(score) >= cutoff
                 dense_mask_cpu[row] = use_dense
                 if use_dense:
                     dense_draft_tokens += 1

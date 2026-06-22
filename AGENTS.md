@@ -379,6 +379,48 @@ examples/evaluate/eval-guidellm/scripts/run_lm_eval_accuracy.sh \
 `logiqa_generative` for the generate-until path; the older built-in `logiqa`
 task depends on a dataset script that the current `datasets` package rejects.
 
+For the current long-output lm-eval TODO, do not use the older LogiQA/MMLU/
+HotpotQA task set. On a single RTX 5090, run only `qwen3_8b` and
+`llama3_1_8b`; do not run 14B/32B/70B on this machine. The formal task set is:
+
+```text
+gsm8k_cot,minerva_math500,gpqa_diamond_cot_zeroshot,ifeval,humaneval_instruct,longbench_multi_news
+```
+
+Use fixed lm-eval sample manifests for reproducibility:
+
+```bash
+examples/evaluate/eval-guidellm/scripts/run_lm_eval_accuracy.sh \
+  --mode all \
+  --task gsm8k_cot,minerva_math500,gpqa_diamond_cot_zeroshot,ifeval,humaneval_instruct,longbench_multi_news \
+  --models qwen3_8b,llama3_1_8b \
+  --use-task-manifests \
+  --manifest-size 200 \
+  --max-new-tokens 512 \
+  --num-spec-tokens 8 \
+  --batch-size 1 \
+  --num-concurrent 1 \
+  --max-num-seqs 1 \
+  --gpu-memory-utilization 0.94 \
+  --allow-unsafe-code \
+  --humaneval-sandbox auto \
+  --resume \
+  --output-dir examples/evaluate/eval-guidellm/results/token_dense_lm_eval_long_output_5090x1_TIMESTAMP
+```
+
+The wrapper writes manifests to
+`examples/evaluate/eval-guidellm/configs/task_manifests/`, uses repo-local
+Hugging Face/evaluate caches under `examples/evaluate/eval-guidellm/temp/`, and
+sets `SPECLINK_TOKEN_DENSE_STATS_INTERVAL=1` for token-dense modes so routing
+fractions appear in `token_dense_stats.jsonl`. `run_meta.json` records
+`started_at`, `ended_at`, and `elapsed_seconds` for each case. GPQA is a gated
+Hugging Face dataset; the wrapper preflights
+`Idavidrein/gpqa:gpqa_diamond` before launching vLLM and records a failed
+`run_meta.json` if the available token lacks access. HumanEval must run with
+`--allow-unsafe-code`; on this machine `bwrap` is available only with
+non-sandboxed execution permissions, so GPU/lm-eval runs must be launched with
+real execution permissions rather than Codex's default sandbox.
+
 Smoke and sanity outputs for this path should go under `results.bak/`, for
 example:
 

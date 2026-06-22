@@ -96,7 +96,7 @@ def method_env(
                     (stats_path.parent / "token_dense_stats.jsonl").resolve()
                 ),
                 "SPECLINK_TOKEN_DENSE_STATS_DETAIL": "0",
+                "SPECLINK_TOKEN_DENSE_STATS_INTERVAL": "1",
             }
         )
     return env
-

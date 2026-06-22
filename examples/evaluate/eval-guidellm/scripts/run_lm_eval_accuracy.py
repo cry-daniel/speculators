@@ -8,6 +8,7 @@ import csv
 import json
 import os
 import random
+import shutil
 import shlex
 import subprocess
 import sys
@@ -62,27 +63,40 @@ MODE_GROUPS = {
     "all": ["dense_ar", "eagle3_dense", *HYBRID_METHODS],
 }
 TASK_GROUPS = {
-    "smoke": ["logiqa_generative", "gsm8k_cot"],
-    "all": [
-        "agieval_logiqa_en",
-        "logiqa_generative",
+    "smoke": [
         "gsm8k_cot",
-        "hendrycks_math",
-        "mmlu_generative",
+        "minerva_math500",
+        "gpqa_diamond_cot_zeroshot",
+        "ifeval",
         "humaneval_instruct",
-        "longbenchv2_generative",
+        "longbench_multi_news",
+    ],
+    "all": [
+        "gsm8k_cot",
+        "minerva_math500",
+        "gpqa_diamond_cot_zeroshot",
+        "ifeval",
+        "humaneval_instruct",
+        "longbench_multi_news",
     ],
 }
 TASK_MAX_TOKENS = {
-    "agieval_logiqa_en": 16,
-    "logiqa_generative": 16,
     "gsm8k_cot": 512,
-    "hendrycks_math500": 1024,
-    "hendrycks_math": 1024,
-    "mmlu_generative": 16,
+    "minerva_math500": 512,
+    "gpqa_diamond_cot_zeroshot": 512,
+    "ifeval": 512,
     "humaneval_instruct": 512,
-    "longbench2": 16,
-    "longbenchv2_generative": 16,
+    "longbench_multi_news": 512,
+}
+TASK_KNOWN_TOTALS = {
+    # These public tasks are smaller than the requested 200-row formal sample.
+    "gpqa_diamond_cot_zeroshot": 198,
+    "humaneval_instruct": 164,
+}
+TASK_PREFLIGHT_DATASETS = {
+    # GPQA is gated on Hugging Face. Check access before starting a vLLM server
+    # so an unauthorized token does not waste one GPU startup per mode.
+    "gpqa_diamond_cot_zeroshot": ("Idavidrein/gpqa", "gpqa_diamond", "train[:1]"),
 }
 
 
@@ -115,6 +129,140 @@ def expand_tasks(value: str) -> list[str]:
     return out
 
 
+def manifest_request_count(args: argparse.Namespace) -> int:
+    if args.manifest_size > 0:
+        return args.manifest_size
+    if args.limit:
+        try:
+            return max(0, int(float(args.limit)))
+        except ValueError:
+            return 0
+    return 0
+
+
+def ensure_task_manifest(
+    args: argparse.Namespace,
+    task: str,
+) -> tuple[Path | None, str | None, int | None, str]:
+    """Create or load an lm-eval --samples manifest for one task."""
+    if not args.use_task_manifests:
+        return None, None, None, ""
+    requested = manifest_request_count(args)
+    if requested <= 0:
+        return None, None, None, ""
+    actual = min(requested, TASK_KNOWN_TOTALS.get(task, requested))
+    ids = list(range(actual))
+    args.manifest_dir.mkdir(parents=True, exist_ok=True)
+    path = args.manifest_dir / f"{task}_{requested}.json"
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            existing = data.get(task)
+            if isinstance(existing, list):
+                ids = [int(item) for item in existing]
+                actual = len(ids)
+        except Exception:
+            # Rewrite malformed manifests instead of silently using bad samples.
+            data = {task: ids}
+            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    else:
+        data = {task: ids}
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    reason = ""
+    if actual < requested:
+        reason = f"task has fewer than requested samples; using {actual}/{requested}"
+    return path, json.dumps({task: ids}), actual, reason
+
+
+def extract_failure_line(text: str) -> str:
+    priority_tokens = (
+        "DatasetNotFoundError",
+        "gated dataset",
+        "Access to dataset",
+        "Access to this dataset",
+        "Cannot access gated repo",
+        "RuntimeError:",
+        "ValueError:",
+        "ERROR",
+    )
+    fallback = ""
+    for line in reversed(text.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if any(token in stripped for token in priority_tokens):
+            return stripped[:500]
+        if not fallback:
+            fallback = stripped[:500]
+    return fallback
+
+
+def preflight_task_access(
+    args: argparse.Namespace,
+    task: str,
+    run_dir: Path,
+) -> str:
+    dataset_info = TASK_PREFLIGHT_DATASETS.get(task)
+    if dataset_info is None:
+        return ""
+    dataset_path, dataset_name, split = dataset_info
+    env = add_local_no_proxy(os.environ.copy())
+    configure_eval_cache_env(args, env)
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "from datasets import load_dataset; "
+            f"load_dataset({dataset_path!r}, {dataset_name!r}, split={split!r})"
+        ),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(EVAL_ROOT),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+            timeout=180,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        reason = extract_failure_line(stdout) or f"task preflight timed out for {task}"
+        write_json(
+            run_dir / "task_preflight.json",
+            {
+                "task": task,
+                "dataset_path": dataset_path,
+                "dataset_name": dataset_name,
+                "split": split,
+                "command": command,
+                "returncode": "timeout",
+                "error": reason,
+            },
+        )
+        (run_dir / "task_preflight.log").write_text(stdout, encoding="utf-8")
+        return reason
+    if completed.returncode == 0:
+        return ""
+    reason = extract_failure_line(completed.stdout)
+    write_json(
+        run_dir / "task_preflight.json",
+        {
+            "task": task,
+            "dataset_path": dataset_path,
+            "dataset_name": dataset_name,
+            "split": split,
+            "command": command,
+            "returncode": completed.returncode,
+            "error": reason,
+        },
+    )
+    (run_dir / "task_preflight.log").write_text(completed.stdout, encoding="utf-8")
+    return reason or f"task preflight failed for {task}"
+
+
 def mode_method(mode: str) -> MethodConfig:
     if mode in {"dense_ar", "eagle3_dense"}:
         return MethodConfig(label="dense", base_method="dense", policy="dense")
@@ -131,6 +279,76 @@ def mode_group(mode: str) -> str:
     if mode == "eagle3_dense":
         return "speculative"
     return "hybrid"
+
+
+def configure_eval_cache_env(args: argparse.Namespace, env: dict[str, str]) -> Path:
+    cache_root = args.hf_cache_root.resolve()
+    for child in ("home", "hf_home", "datasets", "evaluate", "tmp"):
+        (cache_root / child).mkdir(parents=True, exist_ok=True)
+    if not env.get("HF_TOKEN"):
+        for token_path in (
+            Path.home() / ".cache" / "huggingface" / "token",
+            Path.home() / ".huggingface" / "token",
+        ):
+            if token_path.exists():
+                token = token_path.read_text(encoding="utf-8").strip()
+                if token:
+                    env["HF_TOKEN"] = token
+                    break
+    env["HOME"] = str(cache_root / "home")
+    env["HF_HOME"] = str(cache_root / "hf_home")
+    env["HF_DATASETS_CACHE"] = str(cache_root / "datasets")
+    env["HF_EVALUATE_CACHE"] = str(cache_root / "evaluate")
+    env["EVALUATE_CACHE"] = str(cache_root / "evaluate")
+    env["TMPDIR"] = str(cache_root / "tmp")
+    return cache_root
+
+
+def build_bwrap_command(command: list[str], *, run_dir: Path, cache_root: Path) -> list[str]:
+    bwrap = shutil.which("bwrap")
+    if not bwrap:
+        raise RuntimeError("HumanEval sandbox requested but bwrap is not installed")
+    run_dir = run_dir.resolve()
+    cache_root = cache_root.resolve()
+    return [
+        bwrap,
+        "--die-with-parent",
+        "--ro-bind",
+        "/",
+        "/",
+        "--dev-bind",
+        "/dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--tmpfs",
+        "/tmp",
+        "--bind",
+        str(run_dir),
+        str(run_dir),
+        "--bind",
+        str(cache_root),
+        str(cache_root),
+        "--setenv",
+        "HOME",
+        str(cache_root / "home"),
+        "--setenv",
+        "HF_HOME",
+        str(cache_root / "hf_home"),
+        "--setenv",
+        "HF_DATASETS_CACHE",
+        str(cache_root / "datasets"),
+        "--setenv",
+        "HF_EVALUATE_CACHE",
+        str(cache_root / "evaluate"),
+        "--setenv",
+        "EVALUATE_CACHE",
+        str(cache_root / "evaluate"),
+        "--setenv",
+        "TMPDIR",
+        "/tmp",
+        *command,
+    ]
 
 
 def build_vllm_command(
@@ -261,6 +479,9 @@ def run_lm_eval(
     run_dir: Path,
 ) -> int:
     max_gen_toks = args.max_new_tokens or TASK_MAX_TOKENS.get(task, 512)
+    manifest_path, samples_json, manifest_count, manifest_note = ensure_task_manifest(
+        args, task
+    )
     command = [
         "conda",
         "run",
@@ -296,20 +517,44 @@ def run_lm_eval(
         str(run_dir / "lm_eval_output"),
         "--log_samples",
     ]
-    if args.limit:
+    if samples_json:
+        command.extend(["--samples", samples_json])
+    elif args.limit:
         command.extend(["--limit", str(args.limit)])
     if args.apply_chat_template:
         command.append("--apply_chat_template")
     if task == "humaneval_instruct" and args.allow_unsafe_code:
         command.append("--confirm_run_unsafe_code")
-    write_json(run_dir / "lm_eval_command.json", {"command": command})
+    command_to_run = command
     env = add_local_no_proxy(os.environ.copy())
     env["OPENAI_API_KEY"] = "EMPTY"
+    cache_root = configure_eval_cache_env(args, env)
     if task == "humaneval_instruct" and args.allow_unsafe_code:
         env["HF_ALLOW_CODE_EVAL"] = "1"
+        if args.humaneval_sandbox in {"auto", "bwrap"}:
+            command_to_run = build_bwrap_command(
+                command,
+                run_dir=run_dir,
+                cache_root=cache_root,
+            )
+    write_json(
+        run_dir / "lm_eval_command.json",
+        {
+            "command": command,
+            "command_to_run": command_to_run,
+            "manifest_path": str(manifest_path) if manifest_path else "",
+            "manifest_count": manifest_count,
+            "manifest_note": manifest_note,
+            "max_gen_toks": max_gen_toks,
+            "humaneval_sandbox": (
+                args.humaneval_sandbox if task == "humaneval_instruct" else ""
+            ),
+            "cache_root": str(cache_root),
+        },
+    )
     with (run_dir / "lm_eval.log").open("w", encoding="utf-8") as log:
         completed = subprocess.run(
-            command,
+            command_to_run,
             cwd=str(EVAL_ROOT),
             env=env,
             stdout=log,
@@ -342,6 +587,62 @@ def write_skip(run_dir: Path, *, reason: str, task: str, mode: str, model_label:
             "created_at": timestamp(),
         },
     )
+
+
+def completed_run(run_dir: Path) -> bool:
+    if (run_dir / "skip.json").exists():
+        return True
+    meta_path = run_dir / "run_meta.json"
+    if not meta_path.exists():
+        return False
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if meta.get("status") != "ok":
+        return False
+    mode = str(meta.get("mode") or "")
+    if mode.startswith("token_dense_") and not token_dense_stats_valid(run_dir):
+        return False
+    return bool(list((run_dir / "lm_eval_output").rglob("results_*.json")))
+
+
+def token_dense_stats_valid(run_dir: Path) -> bool:
+    stats_path = run_dir / "token_dense_stats.jsonl"
+    if not stats_path.exists() or stats_path.stat().st_size <= 0:
+        return False
+    with stats_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if int(record.get("total_draft_tokens") or 0) > 0:
+                return True
+    return False
+
+
+def prepare_run_dir_for_rerun(run_dir: Path) -> None:
+    for child in (
+        "lm_eval_output",
+        "lm_eval.log",
+        "lm_eval_command.json",
+        "run_meta.json",
+        "server_command.json",
+        "task_preflight.json",
+        "task_preflight.log",
+        "token_dense_stats.jsonl",
+        "vllm_server.log",
+        "vllm_structured_24_stats.json",
+        "skip.json",
+    ):
+        path = run_dir / child
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()
 
 
 def write_environment(output_dir: Path) -> None:
@@ -425,6 +726,26 @@ def set_local_seed(seed: int) -> None:
         pass
 
 
+def gpu_report() -> list[str]:
+    try:
+        completed = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,memory.total",
+                "--format=csv,noheader",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        return []
+    if completed.returncode != 0:
+        return []
+    return [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+
+
 def run(args: argparse.Namespace) -> None:
     configure_local_no_proxy()
     set_local_seed(args.seed)
@@ -442,6 +763,7 @@ def run(args: argparse.Namespace) -> None:
     tasks = expand_tasks(args.task)
 
     commands: list[str] = []
+    task_preflight_failures: dict[str, str] = {}
     for model_label in model_labels:
         model_path = args.model_path or base_models.get(model_label)
         tokenizer_path = args.tokenizer_path or model_path
@@ -454,16 +776,54 @@ def run(args: argparse.Namespace) -> None:
             for task in tasks:
                 run_dir = output_dir / model_label / mode / task
                 run_dir.mkdir(parents=True, exist_ok=True)
-                if args.resume and (
-                    list((run_dir / "lm_eval_output").rglob("*.json"))
-                    or (run_dir / "skip.json").exists()
-                ):
+                if args.resume and completed_run(run_dir):
                     continue
+                prepare_run_dir_for_rerun(run_dir)
                 reason = should_skip_task(args, task)
                 if reason:
                     write_skip(run_dir, reason=reason, task=task, mode=mode, model_label=model_label)
                     continue
+                if task in TASK_PREFLIGHT_DATASETS:
+                    manifest_path, _, manifest_count, manifest_note = ensure_task_manifest(
+                        args, task
+                    )
+                    if task not in task_preflight_failures:
+                        task_preflight_failures[task] = preflight_task_access(
+                            args, task, run_dir
+                        )
+                    preflight_reason = task_preflight_failures[task]
+                    if preflight_reason:
+                        write_json(
+                            run_dir / "run_meta.json",
+                            {
+                                "status": "failed",
+                                "returncode": 2,
+                                "error": preflight_reason,
+                                "model_label": model_label,
+                                "model_path": model_path,
+                                "tokenizer_path": tokenizer_path,
+                                "speculator_path": speculator_path,
+                                "mode": mode,
+                                "mode_group": mode_group(mode),
+                                "task": task,
+                                "uses_speculative": mode_uses_spec(mode),
+                                "max_new_tokens": args.max_new_tokens
+                                or TASK_MAX_TOKENS.get(task, 512),
+                                "use_task_manifests": args.use_task_manifests,
+                                "manifest_size": manifest_request_count(args),
+                                "manifest_dir": str(args.manifest_dir.resolve()),
+                                "manifest_path": str(manifest_path) if manifest_path else "",
+                                "manifest_count": manifest_count,
+                                "manifest_note": manifest_note,
+                                "hf_cache_root": str(args.hf_cache_root.resolve()),
+                                "humaneval_sandbox": "",
+                                "created_at": timestamp(),
+                            },
+                        )
+                        continue
                 process = None
+                case_started_at = timestamp()
+                case_start_time = time.perf_counter()
                 try:
                     process, port = start_server(
                         args,
@@ -484,6 +844,19 @@ def run(args: argparse.Namespace) -> None:
                         run_dir=run_dir,
                     )
                     after = scrape_spec_metrics(port)
+                    case_ended_at = timestamp()
+                    case_elapsed_seconds = time.perf_counter() - case_start_time
+                    stats_error = ""
+                    if (
+                        rc == 0
+                        and mode.startswith("token_dense_")
+                        and not token_dense_stats_valid(run_dir)
+                    ):
+                        rc = 3
+                        stats_error = (
+                            "missing token_dense_stats.jsonl; token-dense "
+                            "routing was not observed during verification"
+                        )
                     accepted = after.get("vllm:spec_decode_num_accepted_tokens", 0.0) - before.get(
                         "vllm:spec_decode_num_accepted_tokens", 0.0
                     )
@@ -503,9 +876,24 @@ def run(args: argparse.Namespace) -> None:
                             "mode_group": mode_group(mode),
                             "task": task,
                             "uses_speculative": mode_uses_spec(mode),
+                            "max_new_tokens": args.max_new_tokens
+                            or TASK_MAX_TOKENS.get(task, 512),
+                            "use_task_manifests": args.use_task_manifests,
+                            "manifest_size": manifest_request_count(args),
+                            "manifest_dir": str(args.manifest_dir.resolve()),
+                            "hf_cache_root": str(args.hf_cache_root.resolve()),
+                            "humaneval_sandbox": (
+                                args.humaneval_sandbox
+                                if task == "humaneval_instruct"
+                                else ""
+                            ),
                             "spec_accepted_tokens": accepted if drafted else None,
                             "spec_draft_tokens": drafted if drafted else None,
                             "spec_acceptance_rate": accepted / drafted if drafted else None,
+                            "started_at": case_started_at,
+                            "ended_at": case_ended_at,
+                            "elapsed_seconds": case_elapsed_seconds,
+                            "error": stats_error,
                             "created_at": timestamp(),
                         },
                     )
@@ -526,6 +914,12 @@ def run(args: argparse.Namespace) -> None:
             "max_context_length": args.max_context_length,
             "max_new_tokens": args.max_new_tokens,
             "limit": args.limit,
+            "use_task_manifests": args.use_task_manifests,
+            "manifest_size": manifest_request_count(args),
+            "manifest_dir": str(args.manifest_dir.resolve()),
+            "hf_cache_root": str(args.hf_cache_root.resolve()),
+            "humaneval_sandbox": args.humaneval_sandbox,
+            "gpu_report": gpu_report(),
             "seed": args.seed,
             "created_at": timestamp(),
         },
@@ -576,6 +970,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", default="1")
     parser.add_argument("--num-concurrent", type=int, default=1)
     parser.add_argument("--calibration-cache-root", type=Path, default=DEFAULT_C4_CALIBRATION_CACHE_ROOT)
+    parser.add_argument("--use-task-manifests", action="store_true")
+    parser.add_argument("--manifest-size", type=int, default=0)
+    parser.add_argument(
+        "--manifest-dir",
+        type=Path,
+        default=EVAL_ROOT / "configs" / "task_manifests",
+    )
+    parser.add_argument(
+        "--hf-cache-root",
+        type=Path,
+        default=EVAL_ROOT / "temp" / "hf_lm_eval_cache",
+    )
+    parser.add_argument(
+        "--humaneval-sandbox",
+        choices=["auto", "bwrap", "none"],
+        default="auto",
+    )
     parser.add_argument("--trust-remote-code", action="store_true")
     parser.add_argument("--apply-chat-template", action="store_true")
     parser.add_argument("--enforce-eager", action="store_true")

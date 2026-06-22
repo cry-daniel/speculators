@@ -192,3 +192,8 @@ TODO.md
 
 examples/evaluate/eval-guidellm/data/c4_calibration/activation_rms
 
+examples/evaluate/eval-guidellm/configs/task_manifests*
+
+examples/evaluate/eval-guidellm/data/longbench_hotpotqa
+
+temp

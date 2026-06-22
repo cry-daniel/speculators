@@ -42,16 +42,19 @@ modes:
 
 tasks:
   smoke:
-    - logiqa_generative
     - gsm8k_cot
-  all:
-    - agieval_logiqa_en
-    - logiqa_generative
-    - gsm8k_cot
-    - hendrycks_math
-    - mmlu_generative
+    - minerva_math500
+    - gpqa_diamond_cot_zeroshot
+    - ifeval
     - humaneval_instruct
-    - longbenchv2_generative
+    - longbench_multi_news
+  all:
+    - gsm8k_cot
+    - minerva_math500
+    - gpqa_diamond_cot_zeroshot
+    - ifeval
+    - humaneval_instruct
+    - longbench_multi_news
 
 default_output_dir: examples/evaluate/eval-guidellm/results/token_dense_lm_eval
 default_num_spec_tokens: 8
