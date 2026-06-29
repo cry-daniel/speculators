@@ -31,6 +31,7 @@ _verify_context: ContextVar[dict[str, Any] | None] = ContextVar(
 )
 
 _pending: defaultdict[str, deque[list[dict[str, Any]]]] = defaultdict(deque)
+_pending_sr24: defaultdict[str, deque[list[dict[str, Any]]]] = defaultdict(deque)
 _step_ids: defaultdict[str, int] = defaultdict(int)
 _lock = threading.Lock()
 
@@ -261,11 +262,128 @@ def _write_records(records: list[dict[str, Any]]) -> None:
 
 
 @torch.inference_mode()
+def record_sr24_verify_mask(
+    *,
+    req_id: str,
+    residual_mask: torch.Tensor | None,
+    scores: torch.Tensor | None,
+    valid_rows: int,
+    residual_policy: str,
+    non_draft_policy: str,
+    threshold: float,
+    mask_state: str,
+    generated_len: int | None = None,
+    bucket_rows: torch.Tensor | None = None,
+    bucket_values: torch.Tensor | None = None,
+    row_offset: int = 0,
+) -> None:
+    """Attach SR24 residual routing to the next confidence-trace label event."""
+    if not enabled() or valid_rows <= 0:
+        return
+    valid_rows = int(valid_rows)
+    if residual_mask is None:
+        if mask_state == "all_residual":
+            mask_values = [True] * valid_rows
+        elif mask_state == "no_residual":
+            mask_values = [False] * valid_rows
+        else:
+            return
+    else:
+        mask_values = (
+            residual_mask[:valid_rows]
+            .detach()
+            .to(device="cpu", dtype=torch.bool)
+            .tolist()
+        )
+    score_values: list[float | None] = [None] * valid_rows
+    if scores is not None:
+        score_cpu = scores[:valid_rows].detach().float().cpu()
+        score_values = [
+            None if bool(torch.isnan(value).item()) else float(value)
+            for value in score_cpu
+        ]
+    bucket_candidate_values: list[int | None] = [None] * valid_rows
+    bucket_corrected_values: list[int | None] = [None] * valid_rows
+    bucket_value_values: list[float | None] = [None] * valid_rows
+    bucket_known = bucket_rows is not None and bucket_values is not None
+    if bucket_known:
+        try:
+            rows_cpu = bucket_rows.detach().to(device="cpu", dtype=torch.long).tolist()
+            values_cpu = bucket_values.detach().float().cpu().tolist()
+            bucket_candidate_values = [0] * valid_rows
+            bucket_corrected_values = [0] * valid_rows
+            bucket_value_values = [0.0] * valid_rows
+            offset = int(row_offset)
+            for raw_row, raw_value in zip(rows_cpu, values_cpu):
+                local_pos = int(raw_row) - offset
+                if 0 <= local_pos < valid_rows:
+                    value = float(raw_value)
+                    bucket_candidate_values[local_pos] = 1
+                    bucket_value_values[local_pos] = value
+                    bucket_corrected_values[local_pos] = int(value != 0.0)
+        except Exception:
+            bucket_known = False
+            bucket_candidate_values = [None] * valid_rows
+            bucket_corrected_values = [None] * valid_rows
+            bucket_value_values = [None] * valid_rows
+    base_only_layer_ids = os.getenv("SPECLINK_SR24_BASE_ONLY_LAYER_IDS", "")
+    base_only_layer_ids_by_leaf = os.getenv(
+        "SPECLINK_SR24_BASE_ONLY_LAYER_IDS_BY_LEAF", ""
+    )
+    rows = [
+        {
+            "sr24_uses_residual": int(bool(mask_values[pos])),
+            "sr24_score": score_values[pos],
+            "sr24_policy": residual_policy,
+            "sr24_non_draft_policy": non_draft_policy,
+            "sr24_threshold": float(threshold),
+            "sr24_mask_state": mask_state,
+            "sr24_generated_len": (
+                int(generated_len) if generated_len is not None else None
+            ),
+            "sr24_bucket_known": int(bucket_known),
+            "sr24_bucket_candidate": bucket_candidate_values[pos],
+            "sr24_bucket_corrected": bucket_corrected_values[pos],
+            "sr24_bucket_value": bucket_value_values[pos],
+            "sr24_effective_residual": (
+                bucket_corrected_values[pos]
+                if bucket_known
+                else int(bool(mask_values[pos]))
+            ),
+            "sr24_base_only_layer_ids": base_only_layer_ids,
+            "sr24_base_only_layer_ids_by_leaf": base_only_layer_ids_by_leaf,
+        }
+        for pos in range(valid_rows)
+    ]
+    with _lock:
+        pending = _pending_sr24[req_id]
+        if pending and len(pending[-1]) == len(rows):
+            merged_rows: list[dict[str, Any]] = []
+            for old_row, new_row in zip(pending[-1], rows):
+                merged = dict(old_row)
+                for key, value in new_row.items():
+                    # The planner-side trace has draft scores; the model-runner
+                    # fallback has bucket coverage. Merge duplicate same-step
+                    # records without replacing useful values with None.
+                    if value is not None or key.startswith("sr24_bucket"):
+                        merged[key] = value
+                if new_row.get("sr24_effective_residual") is not None:
+                    merged["sr24_effective_residual"] = new_row[
+                        "sr24_effective_residual"
+                    ]
+                merged_rows.append(merged)
+            pending[-1] = merged_rows
+        else:
+            pending.append(rows)
+
+
+@torch.inference_mode()
 def label_verified_tokens(
     *,
     metadata: Any,
     output_token_ids: torch.Tensor,
     target_logits: torch.Tensor | None = None,
+    bonus_token_ids: torch.Tensor | None = None,
     method: str = "",
 ) -> None:
     """Attach verifier labels to the oldest pending draft records."""
@@ -279,6 +397,13 @@ def label_verified_tokens(
     batch_size = min(len(req_ids), int(output_token_ids.shape[0]))
     num_draft_tokens = list(metadata.num_draft_tokens)
     output_cpu = output_token_ids[:batch_size].detach().cpu()
+    bonus_cpu: list[int | None] = [None] * batch_size
+    if bonus_token_ids is not None:
+        bonus_values = bonus_token_ids[:batch_size].detach().view(batch_size, -1).cpu()
+        bonus_cpu = [
+            int(row[0].item()) if int(row.numel()) > 0 else None
+            for row in bonus_values
+        ]
     scheduled_token_ids = metadata.draft_token_ids.detach().cpu().tolist()
 
     target_features: dict[str, list[Any]] = {}
@@ -318,7 +443,16 @@ def label_verified_tokens(
                 flattened_offset += n
                 continue
             records = pending.popleft()
+            sr24_rows: list[dict[str, Any]] = []
+            pending_sr24 = _pending_sr24.get(req_id)
+            if pending_sr24:
+                sr24_rows = pending_sr24.popleft()
             valid_count = int((output_cpu[req_idx] != -1).sum().item())
+            valid_output_token_ids = [
+                int(token_id)
+                for token_id in output_cpu[req_idx].tolist()
+                if int(token_id) != -1
+            ]
             num_accepted = max(0, min(valid_count - 1, n))
             first_reject = None if num_accepted >= n else num_accepted + 1
             scheduled = scheduled_token_ids[flattened_offset : flattened_offset + n]
@@ -343,6 +477,9 @@ def label_verified_tokens(
                         "first_reject_position": first_reject,
                         "num_accepted_in_step": num_accepted,
                         "num_scheduled_draft_tokens": n,
+                        "output_token_ids_valid": valid_output_token_ids,
+                        "output_token_count": valid_count,
+                        "bonus_token_id": bonus_cpu[req_idx],
                         "trace_pending_tokens": len(records),
                         "scheduled_token_id": scheduled_id,
                         "token_id_match": scheduled_id == record.get("token_id"),
@@ -379,6 +516,8 @@ def label_verified_tokens(
                             ),
                         }
                     )
+                if pos < len(sr24_rows):
+                    record.update(sr24_rows[pos])
                 labeled.append(record)
             flattened_offset += n
     _write_records(labeled)
