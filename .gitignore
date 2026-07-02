@@ -191,6 +191,7 @@ Experiment*.md
 TODO.md
 
 examples/evaluate/eval-guidellm/data/c4_calibration/activation_rms
+examples/evaluate/eval-guidellm/data/c4_calibration/sr24_masks
 
 examples/evaluate/eval-guidellm/configs/task_manifests*
 

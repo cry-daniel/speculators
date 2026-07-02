@@ -184,6 +184,7 @@ class RejectionSampler(nn.Module):
             metadata=metadata,
             output_token_ids=output_token_ids,
             target_logits=target_logits,
+            bonus_token_ids=bonus_token_ids,
         )
 
         logprobs_tensors = None

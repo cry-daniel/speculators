@@ -116,14 +116,31 @@ from vllm.speclink_confidence_trace import (
     begin_verify_context as speclink_trace_begin_verify_context,
     end_propose_context as speclink_trace_end_propose_context,
     end_verify_context as speclink_trace_end_verify_context,
+    enabled as speclink_trace_enabled,
+    record_sr24_verify_mask as speclink_trace_record_sr24_verify_mask,
 )
 from vllm.speclink_structured_24 import apply_structured_24_from_env
+from vllm.speclink_sr24 import (
+    apply_sr24_from_env as speclink_sr24_apply_from_env,
+    begin_cudagraph_capture_verify_context as speclink_sr24_begin_cudagraph_capture_verify_context,
+    begin_propose_context as speclink_sr24_begin_propose_context,
+    begin_verify_context as speclink_sr24_begin_verify_context,
+    build_verify_residual_mask as speclink_sr24_build_verify_residual_mask,
+    draft_scores_enabled as speclink_sr24_draft_scores_enabled,
+    end_propose_context as speclink_sr24_end_propose_context,
+    end_verify_context as speclink_sr24_end_verify_context,
+    force_cudagraph_none_for_verify_plan as speclink_sr24_force_cudagraph_none_for_verify_plan,
+    gpu_count_mask_builder_enabled as speclink_sr24_gpu_count_mask_builder_enabled,
+    needs_length_context as speclink_sr24_needs_length_context,
+    record_cudagraph_mode as speclink_sr24_record_cudagraph_mode,
+)
 from vllm.speclink_token_dense import (
     begin_propose_context as speclink_token_dense_begin_propose_context,
     begin_verify_context as speclink_token_dense_begin_verify_context,
     build_verify_dense_mask as speclink_token_dense_build_verify_dense_mask,
     end_propose_context as speclink_token_dense_end_propose_context,
     end_verify_context as speclink_token_dense_end_verify_context,
+    enabled as speclink_token_dense_enabled,
 )
 from vllm.smurfs_dynamic import (
     current_draft_limit as smurfs_dynamic_current_draft_limit,
@@ -417,6 +434,7 @@ class ExecuteModelState(NamedTuple):
     ec_connector_output: ECConnectorOutput | None
     cudagraph_stats: CUDAGraphStat | None
     slot_mappings: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None
+    sr24_residual_plan: Any
 
 # SPECLINK_MOTIVATION_BREAKDOWN_PATCH_BEGIN
 def _speclink_breakdown_enabled() -> bool:
@@ -848,6 +866,9 @@ class GPUModelRunner(
         # Maps current batch position -> previous batch position (-1 for new reqs)
         self.prev_positions = self._make_buffer(self.max_num_reqs, dtype=torch.int64)
         self.num_scheduled_tokens = self._make_buffer(
+            self.max_num_reqs, dtype=torch.int32
+        )
+        self.speclink_sr24_num_draft_tokens = self._make_buffer(
             self.max_num_reqs, dtype=torch.int32
         )
 
@@ -1930,10 +1951,12 @@ class GPUModelRunner(
         torch.Tensor,
         SpecDecodeMetadata | None,
         torch.Tensor | None,
+        torch.Tensor | None,
     ]:
         """
         :return: tuple[
             logits_indices, spec_decode_metadata, token_dense_mask,
+            sr24_residual_mask,
         ]
         """
         total_num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
@@ -2181,6 +2204,7 @@ class GPUModelRunner(
 
         use_spec_decode = len(scheduler_output.scheduled_spec_decode_tokens) > 0
         token_dense_mask = None
+        sr24_residual_mask = None
         if not use_spec_decode:
             # NOTE(woosuk): Due to chunked prefills, the batch may contain
             # partial requests. While we should not sample any token
@@ -2210,6 +2234,19 @@ class GPUModelRunner(
                     >= self.input_batch.num_prompt_tokens[req_idx]
                 ):
                     num_decode_draft_tokens[req_idx] = draft_len
+            sr24_gpu_count_mask_builder = (
+                speclink_sr24_gpu_count_mask_builder_enabled()
+            )
+            if sr24_gpu_count_mask_builder:
+                # SR24 only routes target-verifier rows for real decode steps.
+                # A request can carry scheduled draft tokens while it is still
+                # in chunked prefill; those rows must remain dense because
+                # fixed-prefix sparse routing assumes a compact K+1 verifier
+                # block, not a long prompt chunk.
+                self.speclink_sr24_num_draft_tokens.np[:num_reqs] = (
+                    num_decode_draft_tokens
+                )
+                self.speclink_sr24_num_draft_tokens.copy_to_gpu(num_reqs)
             token_dense_mask = speclink_token_dense_build_verify_dense_mask(
                 req_ids=self.input_batch.req_ids,
                 num_scheduled_tokens=num_scheduled_tokens,
@@ -2217,6 +2254,21 @@ class GPUModelRunner(
                 cu_num_scheduled_tokens=cu_num_tokens,
                 total_num_scheduled_tokens=total_num_scheduled_tokens,
                 device=self.device,
+            )
+            sr24_residual_mask = speclink_sr24_build_verify_residual_mask(
+                req_ids=self.input_batch.req_ids,
+                num_scheduled_tokens=num_scheduled_tokens,
+                num_draft_tokens=num_decode_draft_tokens,
+                cu_num_scheduled_tokens=cu_num_tokens,
+                total_num_scheduled_tokens=total_num_scheduled_tokens,
+                device=self.device,
+                num_scheduled_tokens_gpu=num_scheduled_tokens_gpu,
+                num_draft_tokens_gpu=(
+                    self.speclink_sr24_num_draft_tokens.gpu[:num_reqs]
+                    if sr24_gpu_count_mask_builder
+                    else None
+                ),
+                cu_num_scheduled_tokens_gpu=self.query_start_loc.gpu[1 : num_reqs + 1],
             )
             spec_decode_metadata = self._calc_spec_decode_metadata(
                 num_draft_tokens, cu_num_tokens
@@ -2242,6 +2294,7 @@ class GPUModelRunner(
             logits_indices,
             spec_decode_metadata,
             token_dense_mask,
+            sr24_residual_mask,
         )
 
     def _build_attention_metadata(
@@ -4032,11 +4085,22 @@ class GPUModelRunner(
             tokens = [scheduler_output.num_scheduled_tokens[i] for i in req_ids]
             num_scheduled_tokens_np = np.array(tokens, dtype=np.int32)
             max_num_scheduled_tokens = int(num_scheduled_tokens_np.max())
+            min_num_scheduled_tokens = int(num_scheduled_tokens_np.min())
             num_tokens_unpadded = scheduler_output.total_num_scheduled_tokens
 
-            logits_indices, spec_decode_metadata, token_dense_mask = self._prepare_inputs(
+            (
+                logits_indices,
+                spec_decode_metadata,
+                token_dense_mask,
+                sr24_residual_mask,
+            ) = self._prepare_inputs(
                 scheduler_output,
                 num_scheduled_tokens_np,
+            )
+            speclink_sr24_force_cudagraph_none = (
+                speclink_sr24_force_cudagraph_none_for_verify_plan(
+                    sr24_residual_mask
+                )
             )
 
             cascade_attn_prefix_lens = None
@@ -4061,6 +4125,7 @@ class GPUModelRunner(
                 num_scheduled_tokens_np=num_scheduled_tokens_np,
                 max_num_scheduled_tokens=max_num_scheduled_tokens,
                 use_cascade_attn=cascade_attn_prefix_lens is not None,
+                force_eager=speclink_sr24_force_cudagraph_none,
                 num_encoder_reqs=len(scheduler_output.scheduled_encoder_inputs),
             )
 
@@ -4209,6 +4274,9 @@ class GPUModelRunner(
         speclink_token_dense_verify_token = speclink_token_dense_begin_verify_context(
             token_dense_mask
         )
+        speclink_sr24_verify_token = speclink_sr24_begin_verify_context(
+            sr24_residual_mask
+        )
         try:
             with (
                 set_forward_context(
@@ -4235,7 +4303,21 @@ class GPUModelRunner(
                     inputs_embeds=inputs_embeds,
                     **model_kwargs,
                 )
+                speclink_sr24_record_cudagraph_mode(
+                    cudagraph_mode,
+                    phase=phase,
+                    active_requests=num_reqs,
+                    num_tokens_unpadded=num_tokens_unpadded,
+                    num_tokens_padded=num_tokens_padded,
+                    min_scheduled_tokens=min_num_scheduled_tokens,
+                    max_scheduled_tokens=max_num_scheduled_tokens,
+                    uniform_scheduled=(
+                        min_num_scheduled_tokens == max_num_scheduled_tokens
+                    ),
+                    use_spec_decode=use_spec_decode,
+                )
         finally:
+            speclink_sr24_end_verify_context(speclink_sr24_verify_token)
             speclink_token_dense_end_verify_context(speclink_token_dense_verify_token)
             end_verify_detail(speclink_verify_detail_token)
 
@@ -4320,6 +4402,7 @@ class GPUModelRunner(
             ec_connector_output,
             cudagraph_stats,
             slot_mappings,
+            sr24_residual_mask,
         )
         self.kv_connector_output = kv_connector_output
 
@@ -4329,6 +4412,68 @@ class GPUModelRunner(
             deferred_state_corrections_fn()
 
         return None
+
+    def _speclink_record_sr24_verify_trace(
+        self,
+        scheduler_output: "SchedulerOutput",
+        spec_decode_metadata: SpecDecodeMetadata | None,
+        sr24_residual_plan: Any,
+    ) -> None:
+        if (
+            not speclink_trace_enabled()
+            or spec_decode_metadata is None
+            or sr24_residual_plan is None
+        ):
+            return
+
+        residual_mask = getattr(sr24_residual_plan, "mask", sr24_residual_plan)
+        mask_state = getattr(sr24_residual_plan, "state", None)
+        if mask_state is None:
+            mask_state = "mixed" if isinstance(residual_mask, torch.Tensor) else ""
+        if residual_mask is not None and not isinstance(residual_mask, torch.Tensor):
+            return
+        residual_bucket = getattr(sr24_residual_plan, "bucket", None)
+        bucket_rows = None
+        bucket_values = None
+        if residual_bucket is not None:
+            try:
+                bucket_rows, bucket_values = residual_bucket
+            except (TypeError, ValueError):
+                bucket_rows = None
+                bucket_values = None
+
+        req_ids = self.input_batch.req_ids.copy()
+        num_reqs = self.input_batch.num_reqs
+        num_draft_tokens = spec_decode_metadata.num_draft_tokens
+        row_start = 0
+        threshold = float(os.getenv("SPECLINK_SR24_THRESHOLD", "0.0") or 0.0)
+        residual_policy = os.getenv("SPECLINK_SR24_SELECTIVE_RESIDUAL_POLICY", "")
+        non_draft_policy = os.getenv("SPECLINK_SR24_SELECTIVE_NON_DRAFT_POLICY", "")
+
+        for req_idx, req_id in enumerate(req_ids[:num_reqs]):
+            scheduled = int(scheduler_output.num_scheduled_tokens.get(req_id, 0))
+            draft_rows = int(num_draft_tokens[req_idx])
+            if draft_rows > 0:
+                req_mask = (
+                    residual_mask[row_start : row_start + draft_rows]
+                    if residual_mask is not None
+                    else None
+                )
+                speclink_trace_record_sr24_verify_mask(
+                    req_id=req_id,
+                    residual_mask=req_mask,
+                    scores=None,
+                    valid_rows=draft_rows,
+                    residual_policy=residual_policy,
+                    non_draft_policy=non_draft_policy,
+                    threshold=threshold,
+                    mask_state=str(mask_state),
+                    generated_len=len(self.requests[req_id].output_token_ids),
+                    bucket_rows=bucket_rows,
+                    bucket_values=bucket_values,
+                    row_offset=row_start,
+                )
+            row_start += scheduled
 
     @torch.inference_mode
     def sample_tokens(
@@ -4364,6 +4509,7 @@ class GPUModelRunner(
             ec_connector_output,
             cudagraph_stats,
             slot_mappings,
+            sr24_residual_plan,
         ) = self.execute_model_state
         # Clear ephemeral state.
         self.execute_model_state = None
@@ -4385,6 +4531,11 @@ class GPUModelRunner(
 
         _speclink_breakdown_sync()
         speclink_accept_start = _speclink_breakdown_now()
+        self._speclink_record_sr24_verify_trace(
+            scheduler_output,
+            spec_decode_metadata,
+            sr24_residual_plan,
+        )
         speclink_trace_verify_token = speclink_trace_begin_verify_context(
             req_ids=self.input_batch.req_ids.copy(),
             active_requests=self.input_batch.num_reqs,
@@ -5027,47 +5178,66 @@ class GPUModelRunner(
 
             trace_token = None
             token_dense_token = None
+            sr24_token = None
             try:
                 req_ids = self.input_batch.req_ids.copy()
                 num_reqs = self.input_batch.num_reqs
-                prompt_lens = [
-                    int(self.input_batch.num_prompt_tokens[i])
-                    for i in range(num_reqs)
-                ]
-                if valid_sampled_tokens_count is not None:
-                    sampled_counts = (
-                        valid_sampled_tokens_count[:num_reqs]
-                        .detach()
-                        .cpu()
-                        .tolist()
-                    )
-                elif isinstance(sampled_token_ids, list):
-                    sampled_counts = [len(ids) for ids in sampled_token_ids[:num_reqs]]
+                trace_active = speclink_trace_enabled()
+                token_dense_active = speclink_token_dense_enabled()
+                sr24_active = speclink_sr24_draft_scores_enabled()
+                needs_length_context = (
+                    trace_active
+                    or token_dense_active
+                    or (sr24_active and speclink_sr24_needs_length_context())
+                )
+                if needs_length_context:
+                    prompt_lens = [
+                        int(self.input_batch.num_prompt_tokens[i])
+                        for i in range(num_reqs)
+                    ]
+                    # _update_states_after_model_execute() already extended
+                    # req_state.output_token_ids with this step's sampled /
+                    # accepted tokens before the drafter is called.  The
+                    # proposal starts after those tokens, so adding
+                    # sampled_counts here double-counts them and shifts SR24's
+                    # early-dense token window too far forward.
+                    generated_lens = [
+                        len(self.requests[req_id].output_token_ids)
+                        for req_id in req_ids[:num_reqs]
+                    ]
                 else:
-                    sampled_counts = [0] * num_reqs
-                generated_lens = [
-                    len(self.requests[req_id].output_token_ids)
-                    + int(sampled_counts[i])
-                    for i, req_id in enumerate(req_ids[:num_reqs])
-                ]
-                trace_token = speclink_trace_begin_propose_context(
-                    req_ids=req_ids,
-                    prompt_lens=prompt_lens,
-                    generated_lens=generated_lens,
-                    active_requests=num_reqs,
-                    batch_size=num_reqs,
-                    num_spec_tokens=self.num_spec_tokens or 0,
-                    method=spec_config.method,
-                )
-                token_dense_token = speclink_token_dense_begin_propose_context(
-                    req_ids=req_ids,
-                    prompt_lens=prompt_lens,
-                    generated_lens=generated_lens,
-                    active_requests=num_reqs,
-                    batch_size=num_reqs,
-                    num_spec_tokens=self.num_spec_tokens or 0,
-                    method=spec_config.method,
-                )
+                    prompt_lens = []
+                    generated_lens = []
+                if trace_active:
+                    trace_token = speclink_trace_begin_propose_context(
+                        req_ids=req_ids,
+                        prompt_lens=prompt_lens,
+                        generated_lens=generated_lens,
+                        active_requests=num_reqs,
+                        batch_size=num_reqs,
+                        num_spec_tokens=self.num_spec_tokens or 0,
+                        method=spec_config.method,
+                    )
+                if token_dense_active:
+                    token_dense_token = speclink_token_dense_begin_propose_context(
+                        req_ids=req_ids,
+                        prompt_lens=prompt_lens,
+                        generated_lens=generated_lens,
+                        active_requests=num_reqs,
+                        batch_size=num_reqs,
+                        num_spec_tokens=self.num_spec_tokens or 0,
+                        method=spec_config.method,
+                    )
+                if sr24_active:
+                    sr24_token = speclink_sr24_begin_propose_context(
+                        req_ids=req_ids,
+                        prompt_lens=prompt_lens,
+                        generated_lens=generated_lens,
+                        active_requests=num_reqs,
+                        batch_size=num_reqs,
+                        num_spec_tokens=self.num_spec_tokens or 0,
+                        method=spec_config.method,
+                    )
                 draft_token_ids = self.drafter.propose(
                     target_token_ids=target_token_ids,
                     target_positions=target_positions,
@@ -5081,6 +5251,7 @@ class GPUModelRunner(
                     slot_mappings=slot_mappings,
                 )
             finally:
+                speclink_sr24_end_propose_context(sr24_token)
                 speclink_token_dense_end_propose_context(token_dense_token)
                 speclink_trace_end_propose_context(trace_token)
 
@@ -5127,6 +5298,11 @@ class GPUModelRunner(
                         self.model, self.vllm_config, self.device
                     )
                 apply_structured_24_from_env(
+                    self.model,
+                    logger=logger,
+                    context="v1_gpu_model_runner_target",
+                )
+                speclink_sr24_apply_from_env(
                     self.model,
                     logger=logger,
                     context="v1_gpu_model_runner_target",
@@ -5855,26 +6031,44 @@ class GPUModelRunner(
                 if num_tokens_across_dp is not None:
                     num_tokens_across_dp[:] = num_tokens_padded
 
-            with (
-                self.maybe_randomize_inputs(input_ids, inputs_embeds),
-                set_forward_context(
-                    attn_metadata,
-                    self.vllm_config,
-                    num_tokens=num_tokens_padded,
-                    num_tokens_across_dp=num_tokens_across_dp,
-                    cudagraph_runtime_mode=cudagraph_runtime_mode,
-                    batch_descriptor=batch_desc,
-                    ubatch_slices=ubatch_slices_padded,
-                    slot_mapping=slot_mappings,
-                ),
-            ):
-                outputs = self.model(
-                    input_ids=input_ids,
-                    positions=positions,
-                    intermediate_tensors=intermediate_tensors,
-                    inputs_embeds=inputs_embeds,
-                    **model_kwargs,
+            speclink_sr24_capture_token = (
+                speclink_sr24_begin_cudagraph_capture_verify_context(
+                    rows=num_tokens_padded,
+                    device=self.device,
+                    active_requests=num_reqs,
+                    min_scheduled_tokens=int(num_scheduled_tokens.min()),
+                    max_scheduled_tokens=int(num_scheduled_tokens.max()),
+                    use_spec_decode=uniform_decode and max_query_len > 1,
                 )
+                if (
+                    is_graph_capturing
+                    and cudagraph_runtime_mode != CUDAGraphMode.NONE
+                )
+                else None
+            )
+            try:
+                with (
+                    self.maybe_randomize_inputs(input_ids, inputs_embeds),
+                    set_forward_context(
+                        attn_metadata,
+                        self.vllm_config,
+                        num_tokens=num_tokens_padded,
+                        num_tokens_across_dp=num_tokens_across_dp,
+                        cudagraph_runtime_mode=cudagraph_runtime_mode,
+                        batch_descriptor=batch_desc,
+                        ubatch_slices=ubatch_slices_padded,
+                        slot_mapping=slot_mappings,
+                    ),
+                ):
+                    outputs = self.model(
+                        input_ids=input_ids,
+                        positions=positions,
+                        intermediate_tensors=intermediate_tensors,
+                        inputs_embeds=inputs_embeds,
+                        **model_kwargs,
+                    )
+            finally:
+                speclink_sr24_end_verify_context(speclink_sr24_capture_token)
 
             if self.use_aux_hidden_state_outputs:
                 hidden_states, _ = outputs

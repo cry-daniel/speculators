@@ -34,6 +34,10 @@ from vllm.speclink_token_dense import (
     enabled as speclink_token_dense_enabled,
     record_draft_scores as speclink_token_dense_record_draft_scores,
 )
+from vllm.speclink_sr24 import (
+    draft_scores_enabled as speclink_sr24_draft_scores_enabled,
+    record_draft_scores as speclink_sr24_record_draft_scores,
+)
 from vllm.smurfs_dynamic import (
     current_draft_limit as smurfs_dynamic_current_draft_limit,
     enabled as smurfs_dynamic_enabled,
@@ -458,7 +462,8 @@ class SpecDecodeBaseProposer:
         batch_size = common_attn_metadata.batch_size()
         trace_confidence = speclink_trace_enabled()
         token_dense = speclink_token_dense_enabled()
-        need_draft_scores = trace_confidence or token_dense
+        sr24 = speclink_sr24_draft_scores_enabled()
+        need_draft_scores = trace_confidence or token_dense or sr24
         smurfs_dynamic = (
             smurfs_dynamic_enabled(self.method)
             and self.method != "draft_model"
@@ -587,6 +592,13 @@ class SpecDecodeBaseProposer:
                     )
                 if token_dense:
                     speclink_token_dense_record_draft_scores(
+                        draft_token_ids=draft_token_ids,
+                        logits_by_position=logits_by_position,
+                        temperature=sampling_metadata.temperature,
+                        method=self.method,
+                    )
+                if sr24:
+                    speclink_sr24_record_draft_scores(
                         draft_token_ids=draft_token_ids,
                         logits_by_position=logits_by_position,
                         temperature=sampling_metadata.temperature,
@@ -793,6 +805,13 @@ class SpecDecodeBaseProposer:
             )
         if token_dense:
             speclink_token_dense_record_draft_scores(
+                draft_token_ids=draft_token_ids,
+                logits_by_position=draft_logits_by_position,
+                temperature=sampling_metadata.temperature,
+                method=self.method,
+            )
+        if sr24:
+            speclink_sr24_record_draft_scores(
                 draft_token_ids=draft_token_ids,
                 logits_by_position=draft_logits_by_position,
                 temperature=sampling_metadata.temperature,

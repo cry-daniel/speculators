@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "scope": "live_legacy_fixed_block_underfill_bypass",
+  "default_action": "dense_fallback",
+  "policy_prefix": 1,
+  "source_result_root": "examples/evaluate/eval-guidellm/results.bak/sr24_prefix1_front28_noverifydense_math_bs8_16_32_64_20260702",
+  "dependency_constraints": [
+    "Live serving policy for the current legacy fixed-block row-routed MLP path.",
+    "This is not a grouped packed-parallel operator.",
+    "Use dense bypass at bs8/16 because measured prefix1/front28 was slower than dense.",
+    "Allow legacy mixed fixed-block at bs32/64 where the measured path was slightly faster than dense.",
+    "Assumes K=8, prefix=1, fixed-prefix route descriptors, and front28 no-verify dense scope."
+  ],
+  "policies": [
+    {
+      "batch_size": 8,
+      "k": 8,
+      "prefix": 1,
+      "planner_action": "dense_fallback_until_grouped",
+      "mixed_operator": "packed_parallel",
+      "min_grouped_verifier_blocks": 8,
+      "fallback_when_underfilled": "dense",
+      "target_effective_batch_size": 64,
+      "target_speedup": 1.2
+    },
+    {
+      "batch_size": 16,
+      "k": 8,
+      "prefix": 1,
+      "planner_action": "dense_fallback_until_grouped",
+      "mixed_operator": "packed_parallel",
+      "min_grouped_verifier_blocks": 4,
+      "fallback_when_underfilled": "dense",
+      "target_effective_batch_size": 64,
+      "target_speedup": 1.2
+    },
+    {
+      "batch_size": 32,
+      "k": 8,
+      "prefix": 1,
+      "planner_action": "use_mixed_single_block",
+      "mixed_operator": "legacy_fixed_block",
+      "min_grouped_verifier_blocks": 1,
+      "fallback_when_underfilled": "dense",
+      "target_speedup": 1.2
+    },
+    {
+      "batch_size": 64,
+      "k": 8,
+      "prefix": 1,
+      "planner_action": "use_mixed_single_block",
+      "mixed_operator": "legacy_fixed_block",
+      "min_grouped_verifier_blocks": 1,
+      "fallback_when_underfilled": "dense",
+      "target_speedup": 1.2
+    }
+  ]
+}

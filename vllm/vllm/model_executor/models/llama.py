@@ -58,6 +58,17 @@ from vllm.model_executor.model_loader.weight_utils import (
 )
 from vllm.sequence import IntermediateTensors
 from vllm.speclink_breakdown import verify_detail_enabled, verify_timer
+from vllm.speclink_sr24 import enabled as sr24_enabled
+from vllm.speclink_sr24 import gate_up_channel_split_mlp_output as sr24_gate_up_channel_split_mlp_output
+from vllm.speclink_sr24 import gate_up_split_act_output as sr24_gate_up_split_act_output
+from vllm.speclink_sr24 import gate_up_split_linear_output as sr24_gate_up_split_linear_output
+from vllm.speclink_sr24 import linear_hooks_enabled as sr24_linear_hooks_enabled
+from vllm.speclink_sr24 import noverify_dense_mlp_output as sr24_noverify_dense_mlp_output
+from vllm.speclink_sr24 import residual_linear_output as sr24_residual_linear_output
+from vllm.speclink_sr24 import row_routed_down_output as sr24_row_routed_down_output
+from vllm.speclink_sr24 import row_routed_gate_up_output as sr24_row_routed_gate_up_output
+from vllm.speclink_sr24 import row_routed_mlp_output as sr24_row_routed_mlp_output
+from vllm.speclink_sr24 import sparse_linear_output as sr24_sparse_linear_output
 from vllm.speclink_token_dense import mixed_sparse_linear_output
 from vllm.v1.attention.backend import AttentionType
 
@@ -80,6 +91,42 @@ from .utils import (
 )
 
 _SPECLINK_VERIFY_DETAIL = verify_detail_enabled()
+_SPECLINK_SR24_ENABLED = sr24_enabled()
+_SPECLINK_SR24_LINEAR_HOOKS_ENABLED = sr24_linear_hooks_enabled()
+
+
+def _speclink_sr24_needs_residual_postprocess(module: nn.Module) -> bool:
+    if not (_SPECLINK_SR24_ENABLED or sr24_enabled()):
+        return False
+    if not getattr(module, "_speclink_sr24_enabled", False):
+        return False
+    if getattr(module, "_speclink_sr24_dense_fastpath", False):
+        return False
+    return not getattr(module, "_speclink_sr24_no_residual", False)
+
+
+def _speclink_sr24_sparse_output(
+    module: nn.Module,
+    input_tensor: torch.Tensor,
+) -> torch.Tensor | None:
+    if not (_SPECLINK_SR24_ENABLED or sr24_enabled()):
+        return None
+    if not getattr(module, "_speclink_sr24_enabled", False):
+        return None
+    if getattr(module, "_speclink_sr24_dense_fastpath", False):
+        return None
+    output = sr24_sparse_linear_output(module, input_tensor)
+    if output is None:
+        leaf = getattr(module, "_speclink_sr24_profile_leaf", "<unknown>")
+        layer = getattr(module, "_speclink_sr24_profile_layer", "<unknown>")
+        backend = getattr(module, "_speclink_sr24_backend", "<unknown>")
+        raise RuntimeError(
+            "SR24 Llama linear hook was enabled for "
+            f"{leaf} layer {layer} with backend={backend}, but no sparse "
+            "output path was available. Falling back to the original Linear "
+            "would compile a sparse weight as a dense matmul."
+        )
+    return output
 
 
 class LlamaMLP(nn.Module):
@@ -119,11 +166,99 @@ class LlamaMLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
-        gate_up, _ = self.gate_up_proj(x)
-        x = mixed_sparse_linear_output(self.gate_up_proj, x, gate_up)
-        x = self.act_fn(x)
+        gate_up_input = x
+        sr24_hooks = (
+            _SPECLINK_SR24_LINEAR_HOOKS_ENABLED or sr24_linear_hooks_enabled()
+        )
+        noverify_dense_mlp = (
+            sr24_noverify_dense_mlp_output(
+                self.gate_up_proj, self.down_proj, gate_up_input, self.act_fn
+            )
+            if sr24_hooks
+            else None
+        )
+        if noverify_dense_mlp is not None:
+            return noverify_dense_mlp
+        row_routed_mlp = (
+            sr24_row_routed_mlp_output(
+                self.gate_up_proj, self.down_proj, gate_up_input, self.act_fn
+            )
+            if sr24_hooks
+            else None
+        )
+        if row_routed_mlp is not None:
+            return row_routed_mlp
+        channel_split_mlp = (
+            sr24_gate_up_channel_split_mlp_output(
+                self.gate_up_proj, self.down_proj, gate_up_input, self.act_fn
+            )
+            if sr24_hooks
+            else None
+        )
+        if channel_split_mlp is not None:
+            return channel_split_mlp
+        row_routed_gate_up = (
+            sr24_row_routed_gate_up_output(self.gate_up_proj, gate_up_input)
+            if sr24_hooks
+            else None
+        )
+        if row_routed_gate_up is not None:
+            x = self.act_fn(row_routed_gate_up)
+        else:
+            split_act = (
+                sr24_gate_up_split_act_output(self.gate_up_proj, gate_up_input)
+                if sr24_hooks
+                else None
+            )
+            if split_act is not None:
+                x = split_act
+            else:
+                gate_up = (
+                    sr24_gate_up_split_linear_output(self.gate_up_proj, gate_up_input)
+                    if sr24_hooks
+                    else None
+                )
+                if gate_up is None:
+                    gate_up = (
+                        _speclink_sr24_sparse_output(self.gate_up_proj, gate_up_input)
+                        if sr24_hooks
+                        else None
+                    )
+                if gate_up is None:
+                    gate_up, _ = self.gate_up_proj(x)
+                    gate_up = mixed_sparse_linear_output(
+                        self.gate_up_proj, gate_up_input, gate_up
+                    )
+                    if (
+                        sr24_hooks
+                        and _speclink_sr24_needs_residual_postprocess(self.gate_up_proj)
+                    ):
+                        gate_up = sr24_residual_linear_output(
+                            self.gate_up_proj, gate_up_input, gate_up
+                        )
+                x = self.act_fn(gate_up)
+        down = (
+            sr24_row_routed_down_output(self.down_proj, x)
+            if sr24_hooks
+            else None
+        )
+        if down is not None:
+            return down
+        down = (
+            _speclink_sr24_sparse_output(self.down_proj, x)
+            if sr24_hooks
+            else None
+        )
+        if down is not None:
+            return down
         down, _ = self.down_proj(x)
-        return mixed_sparse_linear_output(self.down_proj, x, down)
+        down = mixed_sparse_linear_output(self.down_proj, x, down)
+        if (
+            sr24_hooks
+            and _speclink_sr24_needs_residual_postprocess(self.down_proj)
+        ):
+            down = sr24_residual_linear_output(self.down_proj, x, down)
+        return down
 
 
 class LlamaAttention(nn.Module):
@@ -232,23 +367,81 @@ class LlamaAttention(nn.Module):
     ) -> torch.Tensor:
         if _SPECLINK_VERIFY_DETAIL:
             with verify_timer("qkv_proj"):
+                qkv = (
+                    _speclink_sr24_sparse_output(self.qkv_proj, hidden_states)
+                    if _SPECLINK_SR24_LINEAR_HOOKS_ENABLED
+                    else None
+                )
+                if qkv is None:
+                    qkv, _ = self.qkv_proj(hidden_states)
+                    qkv = mixed_sparse_linear_output(
+                        self.qkv_proj, hidden_states, qkv
+                    )
+                    if (
+                        _SPECLINK_SR24_LINEAR_HOOKS_ENABLED
+                        and _speclink_sr24_needs_residual_postprocess(
+                            self.qkv_proj
+                        )
+                    ):
+                        qkv = sr24_residual_linear_output(
+                            self.qkv_proj, hidden_states, qkv
+                        )
+        else:
+            qkv = (
+                _speclink_sr24_sparse_output(self.qkv_proj, hidden_states)
+                if _SPECLINK_SR24_LINEAR_HOOKS_ENABLED
+                else None
+            )
+            if qkv is None:
                 qkv, _ = self.qkv_proj(hidden_states)
                 qkv = mixed_sparse_linear_output(self.qkv_proj, hidden_states, qkv)
-        else:
-            qkv, _ = self.qkv_proj(hidden_states)
-            qkv = mixed_sparse_linear_output(self.qkv_proj, hidden_states, qkv)
+                if (
+                    _SPECLINK_SR24_LINEAR_HOOKS_ENABLED
+                    and _speclink_sr24_needs_residual_postprocess(self.qkv_proj)
+                ):
+                    qkv = sr24_residual_linear_output(
+                        self.qkv_proj, hidden_states, qkv
+                    )
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         if _SPECLINK_VERIFY_DETAIL:
             with verify_timer("attention"):
                 q, k = self.rotary_emb(positions, q, k)
                 attn_output = self.attn(q, k, v)
-                output, _ = self.o_proj(attn_output)
-                output = mixed_sparse_linear_output(self.o_proj, attn_output, output)
+                output = (
+                    _speclink_sr24_sparse_output(self.o_proj, attn_output)
+                    if _SPECLINK_SR24_LINEAR_HOOKS_ENABLED
+                    else None
+                )
+                if output is None:
+                    output, _ = self.o_proj(attn_output)
+                    output = mixed_sparse_linear_output(
+                        self.o_proj, attn_output, output
+                    )
+                    if (
+                        _SPECLINK_SR24_LINEAR_HOOKS_ENABLED
+                        and _speclink_sr24_needs_residual_postprocess(self.o_proj)
+                    ):
+                        output = sr24_residual_linear_output(
+                            self.o_proj, attn_output, output
+                        )
         else:
             q, k = self.rotary_emb(positions, q, k)
             attn_output = self.attn(q, k, v)
-            output, _ = self.o_proj(attn_output)
-            output = mixed_sparse_linear_output(self.o_proj, attn_output, output)
+            output = (
+                _speclink_sr24_sparse_output(self.o_proj, attn_output)
+                if _SPECLINK_SR24_LINEAR_HOOKS_ENABLED
+                else None
+            )
+            if output is None:
+                output, _ = self.o_proj(attn_output)
+                output = mixed_sparse_linear_output(self.o_proj, attn_output, output)
+                if (
+                    _SPECLINK_SR24_LINEAR_HOOKS_ENABLED
+                    and _speclink_sr24_needs_residual_postprocess(self.o_proj)
+                ):
+                    output = sr24_residual_linear_output(
+                        self.o_proj, attn_output, output
+                    )
         return output
 
     def _init_rotary_emb(

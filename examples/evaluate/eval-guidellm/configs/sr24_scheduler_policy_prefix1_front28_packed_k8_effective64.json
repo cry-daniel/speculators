@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "scope": "operator_local_policy_not_live_serving_claim",
+  "default_action": "dense_fallback",
+  "target_speedup": 1.2,
+  "policy_prefix": 1,
+  "source_summary_csv": "examples/evaluate/eval-guidellm/results.bak/sr24_goal_packed_verifier_mlp_k8_bs8_64_prefix1234_20260701/summary.csv",
+  "dependency_constraints": [
+    "Only group verifier blocks that use the same module weights.",
+    "Do not change decode dependencies; grouping is valid only after all grouped inputs are ready.",
+    "Use dense fallback when the minimum useful grouped blocks are not available within the scheduler latency budget.",
+    "The policy assumes fixed-prefix route descriptors and disjoint dense-important / 2:4-sparse rows.",
+    "This config is planner-derived for prefix=1, K=8, and the front28 no-verify dense quality point."
+  ],
+  "policies": [
+    {
+      "batch_size": 8,
+      "k": 8,
+      "prefix": 1,
+      "planner_action": "dense_fallback",
+      "fallback_when_underfilled": "dense",
+      "dense_rows_per_verifier_block": 16,
+      "base_rows_per_verifier_block": 56,
+      "target_speedup": 1.2
+    },
+    {
+      "batch_size": 16,
+      "k": 8,
+      "prefix": 1,
+      "planner_action": "dense_fallback",
+      "fallback_when_underfilled": "dense",
+      "dense_rows_per_verifier_block": 32,
+      "base_rows_per_verifier_block": 112,
+      "target_speedup": 1.2
+    },
+    {
+      "batch_size": 32,
+      "k": 8,
+      "prefix": 1,
+      "planner_action": "dense_fallback_until_grouped",
+      "mixed_operator": "packed_parallel",
+      "fallback_when_underfilled": "dense",
+      "min_grouped_verifier_blocks": 2,
+      "target_effective_batch_size": 64,
+      "dense_rows_per_verifier_block": 64,
+      "base_rows_per_verifier_block": 224,
+      "grouped_dense_rows": 128,
+      "grouped_base_rows": 448,
+      "dense_capacity": 128,
+      "base_capacity": 448,
+      "mixed_local_speedup_vs_dense": 1.2003586297535043,
+      "target_speedup": 1.2
+    },
+    {
+      "batch_size": 64,
+      "k": 8,
+      "prefix": 1,
+      "planner_action": "dense_fallback_until_grouped",
+      "mixed_operator": "packed_parallel",
+      "fallback_when_underfilled": "dense",
+      "min_grouped_verifier_blocks": 2,
+      "target_effective_batch_size": 128,
+      "dense_rows_per_verifier_block": 128,
+      "base_rows_per_verifier_block": 448,
+      "grouped_dense_rows": 256,
+      "grouped_base_rows": 896,
+      "dense_capacity": 256,
+      "base_capacity": 896,
+      "mixed_local_speedup_vs_dense": 1.29279153860763,
+      "target_speedup": 1.2
+    }
+  ]
+}

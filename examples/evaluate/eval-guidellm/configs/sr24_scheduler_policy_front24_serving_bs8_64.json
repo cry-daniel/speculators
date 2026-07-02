@@ -1,0 +1,63 @@
+{
+  "default_action": "dense_fallback",
+  "dependency_constraints": [
+    "Only applies to the current fixed-prefix verifier-block row-routed MLP path.",
+    "This is a serving-measured policy, not a grouped packed-parallel implementation.",
+    "Use dense bypass when the current single verifier block is too small for the live mixed operator.",
+    "The policy assumes K=8, prefix=2, and disjoint dense-important / 2:4-sparse rows."
+  ],
+  "policies": [
+    {
+      "batch_size": 8,
+      "planner_action": "dense_fallback",
+      "target_speedup": 1.2,
+      "prefix": 2,
+      "k": 8,
+      "fallback_when_underfilled": "dense",
+      "min_grouped_verifier_blocks": null,
+      "mixed_operator": "legacy_fixed_block",
+      "policy_source": "end_to_end_math_reasoning_front24_20260702",
+      "rationale": "bs8 live mixed path was only 1.09x total and should not be forced before a grouped operator exists"
+    },
+    {
+      "batch_size": 16,
+      "planner_action": "dense_fallback",
+      "target_speedup": 1.2,
+      "prefix": 2,
+      "k": 8,
+      "fallback_when_underfilled": "dense",
+      "min_grouped_verifier_blocks": null,
+      "mixed_operator": "legacy_fixed_block",
+      "policy_source": "end_to_end_math_reasoning_front24_20260702",
+      "rationale": "bs16 live mixed path was only 1.04x total and should not be forced before a grouped operator exists"
+    },
+    {
+      "batch_size": 32,
+      "planner_action": "use_mixed_single_block",
+      "target_speedup": 1.2,
+      "prefix": 2,
+      "k": 8,
+      "fallback_when_underfilled": "dense",
+      "min_grouped_verifier_blocks": 1,
+      "mixed_operator": "legacy_fixed_block",
+      "policy_source": "end_to_end_math_reasoning_front24_20260702",
+      "rationale": "bs32 front24 live mixed path reached 1.25x total throughput"
+    },
+    {
+      "batch_size": 64,
+      "planner_action": "use_mixed_single_block",
+      "target_speedup": 1.2,
+      "prefix": 2,
+      "k": 8,
+      "fallback_when_underfilled": "dense",
+      "min_grouped_verifier_blocks": 1,
+      "mixed_operator": "legacy_fixed_block",
+      "policy_source": "end_to_end_math_reasoning_front24_20260702",
+      "rationale": "bs64 front24 live mixed path reached 1.26x total throughput"
+    }
+  ],
+  "schema_version": 1,
+  "scope": "serving_measured_single_block_policy",
+  "source_result_root": "examples/evaluate/eval-guidellm/results.bak/sr24_front24_vs_downfront16_bs8_64_math512_20260702",
+  "target_speedup": 1.2
+}

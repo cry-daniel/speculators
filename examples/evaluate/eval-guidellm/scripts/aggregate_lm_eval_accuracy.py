@@ -64,7 +64,8 @@ METRIC_PRIORITY = [
 ]
 
 TOKENIZER_CACHE: dict[str, Any] = {}
-DENSE_REFERENCE_MODES = ("eagle3_dense", "dense_ar")
+DENSE_REFERENCE_MODES = ("dense_baseline", "eagle3_dense", "dense_ar")
+SPEC_DENSE_REFERENCE_MODES = ("dense_baseline", "eagle3_dense")
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -314,6 +315,240 @@ def summarize_token_dense_stats(run_dir: Path) -> dict[str, Any]:
     return latest
 
 
+def summarize_sr24_stats(run_dir: Path) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    stats_path = run_dir / "speclink_sr24_stats.json"
+    if stats_path.exists():
+        try:
+            stats = json.loads(stats_path.read_text(encoding="utf-8"))
+        except Exception:
+            stats = {}
+        if isinstance(stats, dict):
+            out.update(
+                {
+                    "sr24_mode": stats.get("mode"),
+                    "sr24_backend": stats.get("backend"),
+                    "sr24_residual_backend": stats.get("residual_backend"),
+                    "sr24_residual_device": stats.get("residual_device"),
+                    "sr24_require_gpu_residual": stats.get(
+                        "require_gpu_residual"
+                    ),
+                    "sr24_threshold": stats.get("threshold"),
+                    "sr24_prefix_threshold": stats.get(
+                        "selective_prefix_threshold"
+                    ),
+                    "sr24_all_corrected_dense_fastpath": stats.get(
+                        "all_corrected_dense_fastpath"
+                    ),
+                    "sr24_selective_correct_non_draft": stats.get(
+                        "selective_correct_non_draft"
+                    ),
+                    "sr24_selective_non_draft_policy": stats.get(
+                        "selective_non_draft_policy"
+                    ),
+                    "sr24_selective_residual_policy": stats.get(
+                        "selective_residual_policy"
+                    ),
+                    "sr24_selective_extra_after_low": stats.get(
+                        "selective_extra_after_low"
+                    ),
+                    "sr24_selective_min_prefix_residual": stats.get(
+                        "selective_min_prefix_residual"
+                    ),
+                    "sr24_selective_max_residual_draft_rows": stats.get(
+                        "selective_max_residual_draft_rows"
+                    ),
+                    "sr24_low_confidence_cap_by_risk": stats.get(
+                        "low_confidence_cap_by_risk"
+                    ),
+                    "sr24_early_dense_tokens": stats.get("early_dense_tokens"),
+                    "sr24_sync_mask_state": stats.get("sync_mask_state"),
+                    "sr24_static_mask_state": stats.get("static_mask_state"),
+                    "sr24_static_mask_buffer": stats.get("static_mask_buffer"),
+                    "sr24_batched_mask_builder": stats.get(
+                        "batched_mask_builder"
+                    ),
+                    "sr24_batched_uniform_direct": stats.get(
+                        "batched_uniform_direct"
+                    ),
+                    "sr24_gate_up_split": stats.get("gate_up_split"),
+                    "sr24_row_routed_mlp": stats.get("row_routed_mlp"),
+                    "sr24_row_routed_mlp_min_dense_rows": stats.get(
+                        "row_routed_mlp_min_dense_rows"
+                    ),
+                    "sr24_row_routed_mlp_max_dense_rows": stats.get(
+                        "row_routed_mlp_max_dense_rows"
+                    ),
+                    "sr24_row_routed_mlp_max_base_rows": stats.get(
+                        "row_routed_mlp_max_base_rows"
+                    ),
+                    "sr24_force_cudagraph_none_for_mixed": stats.get(
+                        "force_cudagraph_none_for_mixed"
+                    ),
+                    "sr24_static_mask_buffer_capacity": stats.get(
+                        "static_mask_buffer_capacity"
+                    ),
+                    "sr24_residual_bucket_size": stats.get("residual_bucket_size"),
+                    "sr24_residual_bucket_priority": stats.get(
+                        "residual_bucket_priority"
+                    ),
+                    "sr24_route_bucket_rows": stats.get("route_bucket_rows"),
+                    "sr24_route_all_residual_rows": stats.get(
+                        "route_all_residual_rows"
+                    ),
+                    "sr24_route_reuse_base_output": stats.get(
+                        "route_reuse_base_output"
+                    ),
+                    "sr24_route_dense_fallback_fraction": stats.get(
+                        "route_dense_fallback_fraction"
+                    ),
+                    "sr24_triton_route_assembly": stats.get(
+                        "triton_route_assembly"
+                    ),
+                    "sr24_target_leafs": ",".join(stats.get("target_leafs") or []),
+                    "sr24_residual_target_leafs":
+                    ",".join(stats.get("residual_target_leafs") or []),
+                    "sr24_base_only_layer_ids":
+                    ",".join(
+                        str(item) for item in (stats.get("base_only_layer_ids") or [])
+                    ),
+                    "sr24_base_only_layer_ids_by_leaf":
+                    ";".join(
+                        f"{leaf}={','.join(str(item) for item in layer_ids)}"
+                        for leaf, layer_ids in (
+                            stats.get("base_only_layer_ids_by_leaf") or {}
+                        ).items()
+                    ),
+                    "sr24_residual_layer_ids_by_leaf":
+                    ";".join(
+                        f"{leaf}={','.join(str(item) for item in layer_ids)}"
+                        for leaf, layer_ids in (
+                            stats.get("residual_layer_ids_by_leaf") or {}
+                        ).items()
+                    ),
+                    "sr24_residual_out_chunk": stats.get("residual_out_chunk"),
+                    "sr24_extract_chunk_rows": stats.get(
+                        "residual_extract_chunk_rows"
+                    ),
+                    "sr24_residual_extract_cpu_fallback_chunks": stats.get(
+                        "residual_extract_cpu_fallback_chunks"
+                    ),
+                    "sr24_residual_extract_cpu_fallback_module_count": stats.get(
+                        "residual_extract_cpu_fallback_module_count"
+                    ),
+                    "sr24_residual_backend_counts": json.dumps(
+                        stats.get("residual_backend_counts") or {},
+                        sort_keys=True,
+                    ),
+                    "sr24_residual_device_counts": json.dumps(
+                        stats.get("residual_device_counts") or {},
+                        sort_keys=True,
+                    ),
+                    "sr24_residual_cpu_module_count": stats.get(
+                        "residual_cpu_module_count"
+                    ),
+                    "sr24_residual_cuda_module_count": stats.get(
+                        "residual_cuda_module_count"
+                    ),
+                    "sr24_compressed_residual_runtime_on_gpu": stats.get(
+                        "compressed_residual_runtime_on_gpu"
+                    ),
+                    "sr24_compressed_residual_non_gpu_modules": ",".join(
+                        stats.get("compressed_residual_non_gpu_modules") or []
+                    ),
+                    "sr24_module_count_attached": stats.get("module_count_attached"),
+                    "sr24_storage_over_dense": stats.get("storage_over_dense"),
+                    "sr24_actual_weight_storage_bytes": stats.get(
+                        "actual_weight_storage_bytes"
+                    ),
+                    "sr24_sparse_metadata_bytes": stats.get("sparse_metadata_bytes"),
+                    "sr24_mask_metadata_bytes": stats.get("mask_metadata_bytes"),
+                    "sr24_mask_path": stats.get("mask_path"),
+                    "sr24_mask_cache_method": stats.get("mask_cache_method"),
+                }
+            )
+    events_path = run_dir / "speclink_sr24_events.jsonl"
+    latest_summary: dict[str, Any] = {}
+    if events_path.exists():
+        with events_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if record.get("event") in {"sr24_verify_summary", "sr24_verify_mask"}:
+                    latest_summary = record
+    if latest_summary:
+        out.update(
+            {
+                "sr24_total_draft_tokens": latest_summary.get("total_draft_tokens"),
+                "sr24_total_valid_draft_tokens": latest_summary.get(
+                    "total_valid_draft_tokens"
+                ),
+                "sr24_non_draft_tokens": latest_summary.get("non_draft_tokens"),
+                "sr24_residual_draft_tokens": latest_summary.get(
+                    "residual_draft_tokens"
+                ),
+                "sr24_base_only_draft_tokens": latest_summary.get(
+                    "base_only_draft_tokens"
+                ),
+                "sr24_residual_non_draft_tokens": latest_summary.get(
+                    "residual_non_draft_tokens"
+                ),
+                "sr24_base_only_non_draft_tokens": latest_summary.get(
+                    "base_only_non_draft_tokens"
+                ),
+                "sr24_early_residual_draft_tokens": latest_summary.get(
+                    "early_residual_draft_tokens"
+                ),
+                "sr24_early_residual_non_draft_tokens": latest_summary.get(
+                    "early_residual_non_draft_tokens"
+                ),
+                "sr24_missing_score_tokens": latest_summary.get(
+                    "missing_score_tokens"
+                ),
+                "sr24_sync_reduced_stats": latest_summary.get(
+                    "sync_reduced_stats"
+                ),
+                "sr24_stats_exact": latest_summary.get("stats_exact"),
+                "sr24_residual_draft_fraction": latest_summary.get(
+                    "residual_draft_fraction"
+                ),
+                "sr24_bucket_calls": latest_summary.get("bucket_calls"),
+                "sr24_bucket_candidate_rows": latest_summary.get(
+                    "bucket_candidate_rows"
+                ),
+                "sr24_bucket_active_rows": latest_summary.get(
+                    "bucket_active_rows"
+                ),
+                "sr24_bucket_total_rows": latest_summary.get("bucket_total_rows"),
+                "sr24_bucket_residual_requested_rows": latest_summary.get(
+                    "bucket_residual_requested_rows"
+                ),
+                "sr24_bucket_candidate_rows_per_call": latest_summary.get(
+                    "bucket_candidate_rows_per_call"
+                ),
+                "sr24_bucket_active_rows_per_call": latest_summary.get(
+                    "bucket_active_rows_per_call"
+                ),
+                "sr24_bucket_active_fraction_of_requested": latest_summary.get(
+                    "bucket_active_fraction_of_requested"
+                ),
+                "sr24_residual_non_draft_fraction": (
+                    (
+                        latest_summary.get("residual_non_draft_tokens")
+                        / latest_summary.get("non_draft_tokens")
+                    )
+                    if latest_summary.get("non_draft_tokens")
+                    else None
+                ),
+            }
+        )
+    return out
+
+
 def load_sample_map(run_dir: Path, task_name: str, metric: str) -> dict[str, dict[str, Any]]:
     sample_path = find_samples_jsonl(run_dir, task_name)
     if sample_path is None:
@@ -345,6 +580,8 @@ def rows_from_runs(output_dir: Path) -> list[dict[str, Any]]:
         meta = load_json(meta_path)
         result_path = find_result_json(run_dir)
         status = meta.get("status", "")
+        meta_error = meta.get("error") or ""
+        log_error = failure_reason(run_dir) if status != "ok" else ""
         if not result_path:
             task_name = str(meta.get("task") or "")
             rows.append(
@@ -356,15 +593,16 @@ def rows_from_runs(output_dir: Path) -> list[dict[str, Any]]:
                     "samples": "",
                     "result_path": "",
                     "status": status or "missing_result",
-                    "error": meta.get("error") or failure_reason(run_dir),
+                    "error": meta_error or failure_reason(run_dir),
                 }
             )
             continue
         data = load_json(result_path)
         results = data.get("results", {})
         token_dense_stats = summarize_token_dense_stats(run_dir)
+        sr24_stats = summarize_sr24_stats(run_dir)
         row_status = status
-        row_error = meta.get("error") or failure_reason(run_dir)
+        row_error = meta_error or log_error
         if (
             str(meta.get("mode") or "").startswith("token_dense_")
             and status == "ok"
@@ -375,6 +613,13 @@ def rows_from_runs(output_dir: Path) -> list[dict[str, Any]]:
                 "missing token_dense_stats.jsonl; token-dense routing was not "
                 "observed during verification"
             )
+        if (
+            str(meta.get("mode") or "") in {"base_only_24", "all_corrected_24", "speclink_t08"}
+            and status == "ok"
+            and not sr24_stats
+        ):
+            row_status = "failed"
+            row_error = "missing speclink_sr24 stats/events"
         for task_name, task_result in results.items():
             if not isinstance(task_result, dict):
                 continue
@@ -402,6 +647,7 @@ def rows_from_runs(output_dir: Path) -> list[dict[str, Any]]:
                         "token_dense_missing_score_tokens": token_dense_stats.get(
                             "missing_score_tokens"
                         ),
+                        **sr24_stats,
                     }
                 )
     for skip_path in sorted(output_dir.rglob("skip.json")):
@@ -426,6 +672,8 @@ def rows_from_runs(output_dir: Path) -> list[dict[str, Any]]:
 
 def add_dense_comparisons(rows: list[dict[str, Any]]) -> None:
     dense_scores: dict[tuple[str, str, str], float] = {}
+    dense_ar_scores: dict[tuple[str, str, str], float] = {}
+    dense_spec_scores: dict[tuple[str, str, str], float] = {}
     for reference_mode in DENSE_REFERENCE_MODES:
         for row in rows:
             if row.get("mode") != reference_mode:
@@ -443,19 +691,44 @@ def add_dense_comparisons(rows: list[dict[str, Any]]) -> None:
             ):
                 dense_scores[key] = float(score)
     for row in rows:
+        mode = str(row.get("mode") or "")
         score = row.get("score")
-        dense = dense_scores.get(
-            (
-                str(row.get("model_label")),
-                str(row.get("task_result_name")),
-                str(row.get("metric")),
-            )
+        if not (isinstance(score, (int, float)) and math.isfinite(float(score))):
+            continue
+        key = (
+            str(row.get("model_label")),
+            str(row.get("task_result_name")),
+            str(row.get("metric")),
         )
+        if mode == "dense_ar" and key not in dense_ar_scores:
+            dense_ar_scores[key] = float(score)
+        if mode in SPEC_DENSE_REFERENCE_MODES and key not in dense_spec_scores:
+            dense_spec_scores[key] = float(score)
+    for row in rows:
+        score = row.get("score")
+        key = (
+            str(row.get("model_label")),
+            str(row.get("task_result_name")),
+            str(row.get("metric")),
+        )
+        dense = dense_scores.get(key)
+        dense_ar = dense_ar_scores.get(key)
+        dense_spec = dense_spec_scores.get(key)
         row["dense_score"] = dense
+        row["dense_ar_score"] = dense_ar
+        row["dense_spec_score"] = dense_spec
         if isinstance(score, (int, float)) and dense is not None:
             row["delta_pp_vs_dense"] = (float(score) - dense) * 100.0
         else:
             row["delta_pp_vs_dense"] = ""
+        if isinstance(score, (int, float)) and dense_ar is not None:
+            row["delta_pp_vs_dense_ar"] = (float(score) - dense_ar) * 100.0
+        else:
+            row["delta_pp_vs_dense_ar"] = ""
+        if isinstance(score, (int, float)) and dense_spec is not None:
+            row["delta_pp_vs_dense_spec"] = (float(score) - dense_spec) * 100.0
+        else:
+            row["delta_pp_vs_dense_spec"] = ""
 
 
 def add_paired_comparisons(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -565,8 +838,12 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "task_result_name",
         "metric",
         "dense_score",
+        "dense_ar_score",
+        "dense_spec_score",
         "score",
         "delta_pp_vs_dense",
+        "delta_pp_vs_dense_ar",
+        "delta_pp_vs_dense_spec",
         "samples",
         "paired_samples",
         "dense_correct",
@@ -590,6 +867,86 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "token_dense_dense_draft_fraction",
         "token_dense_sparse_draft_fraction",
         "token_dense_missing_score_tokens",
+        "sr24_preset",
+        "sr24_mode",
+        "sr24_backend",
+        "sr24_residual_backend",
+        "sr24_residual_device",
+        "sr24_require_gpu_residual",
+        "sr24_threshold",
+        "sr24_prefix_threshold",
+        "sr24_all_corrected_dense_fastpath",
+        "sr24_selective_correct_non_draft",
+        "sr24_selective_non_draft_policy",
+        "sr24_selective_residual_policy",
+        "sr24_selective_extra_after_low",
+        "sr24_selective_min_prefix_residual",
+        "sr24_selective_max_residual_draft_rows",
+        "sr24_low_confidence_cap_by_risk",
+        "sr24_early_dense_tokens",
+        "sr24_sync_mask_state",
+        "sr24_static_mask_state",
+        "sr24_static_mask_buffer",
+        "sr24_batched_mask_builder",
+        "sr24_batched_uniform_direct",
+        "sr24_gate_up_split",
+        "sr24_row_routed_mlp",
+        "sr24_row_routed_mlp_min_dense_rows",
+        "sr24_row_routed_mlp_max_dense_rows",
+        "sr24_row_routed_mlp_max_base_rows",
+        "sr24_force_cudagraph_none_for_mixed",
+        "sr24_static_mask_buffer_capacity",
+        "sr24_residual_bucket_size",
+        "sr24_residual_bucket_priority",
+        "sr24_route_bucket_rows",
+        "sr24_route_all_residual_rows",
+        "sr24_route_reuse_base_output",
+        "sr24_route_dense_fallback_fraction",
+        "sr24_triton_route_assembly",
+        "sr24_target_leafs",
+        "sr24_residual_target_leafs",
+        "sr24_base_only_layer_ids",
+        "sr24_base_only_layer_ids_by_leaf",
+        "sr24_residual_layer_ids_by_leaf",
+        "sr24_residual_out_chunk",
+        "sr24_extract_chunk_rows",
+        "sr24_residual_extract_cpu_fallback_chunks",
+        "sr24_residual_extract_cpu_fallback_module_count",
+        "sr24_residual_backend_counts",
+        "sr24_residual_device_counts",
+        "sr24_residual_cpu_module_count",
+        "sr24_residual_cuda_module_count",
+        "sr24_compressed_residual_runtime_on_gpu",
+        "sr24_compressed_residual_non_gpu_modules",
+        "sr24_residual_draft_fraction",
+        "sr24_residual_non_draft_fraction",
+        "sr24_residual_draft_tokens",
+        "sr24_base_only_draft_tokens",
+        "sr24_bucket_calls",
+        "sr24_bucket_candidate_rows",
+        "sr24_bucket_active_rows",
+        "sr24_bucket_total_rows",
+        "sr24_bucket_residual_requested_rows",
+        "sr24_bucket_candidate_rows_per_call",
+        "sr24_bucket_active_rows_per_call",
+        "sr24_bucket_active_fraction_of_requested",
+        "sr24_early_residual_draft_tokens",
+        "sr24_early_residual_non_draft_tokens",
+        "sr24_total_draft_tokens",
+        "sr24_total_valid_draft_tokens",
+        "sr24_non_draft_tokens",
+        "sr24_residual_non_draft_tokens",
+        "sr24_base_only_non_draft_tokens",
+        "sr24_missing_score_tokens",
+        "sr24_sync_reduced_stats",
+        "sr24_stats_exact",
+        "sr24_storage_over_dense",
+        "sr24_actual_weight_storage_bytes",
+        "sr24_sparse_metadata_bytes",
+        "sr24_mask_metadata_bytes",
+        "sr24_module_count_attached",
+        "sr24_mask_cache_method",
+        "sr24_mask_path",
         "result_path",
         "error",
     ]
@@ -609,17 +966,64 @@ def write_report(path: Path, rows: list[dict[str, Any]]) -> None:
 
     with path.open("w", encoding="utf-8") as handle:
         handle.write("# lm-eval Accuracy Report\n\n")
-        handle.write("Modes are dense target-only, dense EAGLE3, activation-aware, and token_dense_t00-t10.\n\n")
-        handle.write("The `Dense` reference column uses `eagle3_dense` when available, otherwise `dense_ar`.\n\n")
+        handle.write(
+            "Modes are dense target-only, dense EAGLE3, activation-aware, "
+            "token_dense_t00-t10, and SR24 (`base_only_24`, "
+            "`all_corrected_24`, `speclink_t08`).\n\n"
+        )
+        handle.write(
+            "The `Dense` reference column uses `dense_baseline` when available, "
+            "then `eagle3_dense`, otherwise `dense_ar`.\n\n"
+        )
+        handle.write(
+            "`AR ref` is pure target-model autoregressive serving. `Spec ref` "
+            "is dense EAGLE3 speculative serving (`dense_baseline` or "
+            "`eagle3_dense`). SR24 accuracy debugging should inspect both, "
+            "because dense speculative serving can differ from AR on reasoning "
+            "samples even with `temperature=0`.\n\n"
+        )
         handle.write(
             "Output length stats are computed from raw lm-eval completion samples. "
             "`eos_finished_count` is inferred as non-clipped completions because "
             "lm-eval local-completions samples do not persist API finish_reason.\n\n"
         )
-        handle.write("| Task | Metric | Model | Mode | Dense | Experimental | Delta pp | Samples | Avg out tok | P90 out tok | Clipped | Spec accept | Dense route | Status |\n")
-        handle.write("|------|--------|-------|------|------:|-------------:|---------:|--------:|------------:|------------:|--------:|------------:|------------:|--------|\n")
+        handle.write(
+            "`Pair reg` counts dense-correct / experimental-wrong samples; "
+            "`Pair imp` counts dense-wrong / experimental-correct samples. "
+            "Use these paired counts to distinguish true quality preservation "
+            "from aggregate-score cancellation.\n\n"
+        )
+        handle.write("| Task | Metric | Model | Mode | Dense | AR ref | Spec ref | Experimental | Delta pp | Delta vs AR | Delta vs Spec | Samples | Pair n | Pair reg | Pair imp | Dense retain | Avg out tok | P90 out tok | Clipped | Spec accept | Dense route | SR24 draft residual | SR24 non-draft residual | SR24 bucket actual/requested | SR24 bucket rows/call | SR24 early guard | SR24 policy | SR24 gate/up split | SR24 target leafs | SR24 residual leafs | SR24 base-only layers | SR24 residual layers | SR24 chunk | SR24 backend | Status |\n")
+        handle.write("|------|--------|-------|------|------:|-------:|---------:|-------------:|---------:|------------:|--------------:|--------:|-------:|---------:|---------:|-------------:|------------:|------------:|--------:|------------:|------------:|-------------------:|-----------------------:|----------------------------:|---------------------:|-----------------|-------------|--------------------|-------------------|---------------------|-----------------------|------------------------|-----------:|-------------|--------|\n")
         for row in sorted(rows, key=lambda item: (str(item.get("task_result_name")), str(item.get("metric")), str(item.get("model_label")), str(item.get("mode")))):
             protocol = "generative" if "generative" in str(row.get("task")) or str(row.get("metric")).startswith("exact_match") else "official"
+            sr24_policy = fmt(row.get("sr24_selective_residual_policy"))
+            extra_after_low = row.get("sr24_selective_extra_after_low")
+            if (
+                sr24_policy
+                and sr24_policy != ""
+                and extra_after_low not in {None, "", 0, "0"}
+            ):
+                sr24_policy = f"{sr24_policy}+extra{extra_after_low}"
+            prefix_threshold = row.get("sr24_prefix_threshold")
+            if sr24_policy == "prefix_confidence" and prefix_threshold not in {
+                None,
+                "",
+            }:
+                sr24_policy = f"{sr24_policy}@{fmt(prefix_threshold)}"
+            non_draft_policy = fmt(row.get("sr24_selective_non_draft_policy"))
+            if non_draft_policy and non_draft_policy not in {"", "auto"}:
+                sr24_policy = (
+                    f"{sr24_policy}; non_draft={non_draft_policy}"
+                    if sr24_policy else f"non_draft={non_draft_policy}"
+                )
+            early_guard = fmt(row.get("sr24_early_dense_tokens"))
+            if early_guard:
+                early_guard = (
+                    f"{early_guard}; "
+                    f"{fmt(row.get('sr24_early_residual_draft_tokens'))}/"
+                    f"{fmt(row.get('sr24_early_residual_non_draft_tokens'))}"
+                )
             handle.write(
                 "| "
                 + " | ".join(
@@ -629,14 +1033,56 @@ def write_report(path: Path, rows: list[dict[str, Any]]) -> None:
                         str(row.get("model_label") or ""),
                         str(row.get("mode") or ""),
                         fmt(row.get("dense_score")),
+                        fmt(row.get("dense_ar_score")),
+                        fmt(row.get("dense_spec_score")),
                         fmt(row.get("score")),
                         fmt(row.get("delta_pp_vs_dense")),
+                        fmt(row.get("delta_pp_vs_dense_ar")),
+                        fmt(row.get("delta_pp_vs_dense_spec")),
                         fmt(row.get("samples")),
+                        fmt(row.get("paired_samples")),
+                        fmt(row.get("dense_correct_experimental_wrong")),
+                        fmt(row.get("dense_wrong_experimental_correct")),
+                        fmt(row.get("dense_correct_retention")),
                         fmt(row.get("avg_output_tokens")),
                         fmt(row.get("p90_output_tokens")),
                         fmt(row.get("max_token_clipped_count")),
                         fmt(row.get("spec_acceptance_rate")),
                         fmt(row.get("token_dense_dense_draft_fraction")),
+                        fmt(row.get("sr24_residual_draft_fraction")),
+                        fmt(row.get("sr24_residual_non_draft_fraction")),
+                        (
+                            f"{fmt(row.get('sr24_bucket_active_rows'))}/"
+                            f"{fmt(row.get('sr24_bucket_residual_requested_rows'))}"
+                        ),
+                        (
+                            f"{fmt(row.get('sr24_bucket_active_rows_per_call'))}/"
+                            f"{fmt(row.get('sr24_bucket_candidate_rows_per_call'))}"
+                        ),
+                        early_guard,
+                        sr24_policy,
+                        fmt(row.get("sr24_gate_up_split")),
+                        fmt(row.get("sr24_target_leafs")),
+                        fmt(row.get("sr24_residual_target_leafs")),
+                        fmt(
+                            row.get("sr24_base_only_layer_ids_by_leaf")
+                            or row.get("sr24_base_only_layer_ids")
+                        ),
+                        fmt(row.get("sr24_residual_layer_ids_by_leaf")),
+                        fmt(row.get("sr24_residual_out_chunk")),
+                        (
+                            str(row.get("sr24_backend") or "")
+                            + (
+                                f"/{row.get('sr24_residual_backend')}"
+                                if row.get("sr24_residual_backend")
+                                else ""
+                            )
+                            + (
+                                f"@{row.get('sr24_residual_device')}"
+                                if row.get("sr24_residual_device")
+                                else ""
+                            )
+                        ),
                         str(row.get("status") or ""),
                     ]
                 )
