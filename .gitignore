@@ -192,3 +192,4 @@ TODO.md
 
 examples/evaluate/eval-guidellm/data/c4_calibration/activation_rms
 
+examples/evaluate/eval-guidellm/data/c4_calibration/offline*
