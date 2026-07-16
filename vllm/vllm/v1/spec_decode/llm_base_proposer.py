@@ -31,8 +31,10 @@ from vllm.speclink_confidence_trace import (
     record_draft_features as speclink_trace_record_draft_features,
 )
 from vllm.speclink_token_dense import (
-    enabled as speclink_token_dense_enabled,
+    compute_greedy_token_ids_and_logprobs as speclink_token_dense_greedy_with_logprob,
+    draft_scores_required as speclink_token_dense_draft_scores_required,
     record_draft_scores as speclink_token_dense_record_draft_scores,
+    score_backend as speclink_token_dense_score_backend,
 )
 from vllm.smurfs_dynamic import (
     current_draft_limit as smurfs_dynamic_current_draft_limit,
@@ -457,8 +459,14 @@ class SpecDecodeBaseProposer:
     ) -> torch.Tensor:
         batch_size = common_attn_metadata.batch_size()
         trace_confidence = speclink_trace_enabled()
-        token_dense = speclink_token_dense_enabled()
-        need_draft_scores = trace_confidence or token_dense
+        token_dense_scores = speclink_token_dense_draft_scores_required()
+        need_draft_scores = trace_confidence or token_dense_scores
+        fused_token_dense_scores = (
+            token_dense_scores
+            and not trace_confidence
+            and speclink_token_dense_score_backend() == "triton_fused"
+            and not self.use_local_argmax_reduction
+        )
         smurfs_dynamic = (
             smurfs_dynamic_enabled(self.method)
             and self.method != "draft_model"
@@ -561,7 +569,12 @@ class SpecDecodeBaseProposer:
         if effective_num_speculative_tokens == 1 or self.parallel_drafting:
             if need_draft_scores:
                 logits = self.model.compute_logits(sample_hidden_states)
-                if self.use_local_argmax_reduction:
+                selected_logprobs_by_position = None
+                if fused_token_dense_scores:
+                    draft_token_ids, selected_logprobs = (
+                        speclink_token_dense_greedy_with_logprob(logits)
+                    )
+                elif self.use_local_argmax_reduction:
                     draft_token_ids = self.model.get_top_tokens(sample_hidden_states)
                 else:
                     draft_token_ids = logits.argmax(dim=-1)
@@ -569,15 +582,26 @@ class SpecDecodeBaseProposer:
                     -1,
                     effective_num_speculative_tokens,
                 )
-                logits = logits.reshape(
-                    -1,
-                    effective_num_speculative_tokens,
-                    logits.shape[-1],
-                )
-                logits_by_position = [
-                    logits[:, i, :]
-                    for i in range(effective_num_speculative_tokens)
-                ]
+                if fused_token_dense_scores:
+                    selected_logprobs = selected_logprobs.view(
+                        -1,
+                        effective_num_speculative_tokens,
+                    )
+                    selected_logprobs_by_position = [
+                        selected_logprobs[:, i]
+                        for i in range(effective_num_speculative_tokens)
+                    ]
+                    logits_by_position = []
+                else:
+                    logits = logits.reshape(
+                        -1,
+                        effective_num_speculative_tokens,
+                        logits.shape[-1],
+                    )
+                    logits_by_position = [
+                        logits[:, i, :]
+                        for i in range(effective_num_speculative_tokens)
+                    ]
                 if trace_confidence:
                     speclink_trace_record_draft_features(
                         draft_token_ids=draft_token_ids,
@@ -585,10 +609,13 @@ class SpecDecodeBaseProposer:
                         temperature=sampling_metadata.temperature,
                         method=self.method,
                     )
-                if token_dense:
+                if token_dense_scores:
                     speclink_token_dense_record_draft_scores(
                         draft_token_ids=draft_token_ids,
                         logits_by_position=logits_by_position,
+                        selected_logprobs_by_position=(
+                            selected_logprobs_by_position
+                        ),
                         temperature=sampling_metadata.temperature,
                         method=self.method,
                     )
@@ -627,13 +654,22 @@ class SpecDecodeBaseProposer:
             return torch.cat(draft_token_ids_list, dim=1)
 
         draft_logits_by_position: list[torch.Tensor] = []
+        draft_selected_logprobs_by_position: list[torch.Tensor] = []
         if need_draft_scores:
             logits = self.model.compute_logits(sample_hidden_states)
-            draft_logits_by_position.append(logits)
-            if self.use_local_argmax_reduction:
-                draft_token_ids = self.model.get_top_tokens(sample_hidden_states)
+            if fused_token_dense_scores:
+                draft_token_ids, selected_logprobs = (
+                    speclink_token_dense_greedy_with_logprob(logits)
+                )
+                draft_selected_logprobs_by_position.append(selected_logprobs)
             else:
-                draft_token_ids = logits.argmax(dim=-1)
+                draft_logits_by_position.append(logits)
+                if self.use_local_argmax_reduction:
+                    draft_token_ids = self.model.get_top_tokens(
+                        sample_hidden_states
+                    )
+                else:
+                    draft_token_ids = logits.argmax(dim=-1)
         else:
             draft_token_ids = self._greedy_sample(sample_hidden_states)
 
@@ -771,13 +807,19 @@ class SpecDecodeBaseProposer:
             hidden_states = hidden_states[:batch_size]
             if need_draft_scores:
                 logits = self.model.compute_logits(last_hidden_states[:batch_size])
-                draft_logits_by_position.append(logits)
-                if self.use_local_argmax_reduction:
-                    draft_token_ids = self.model.get_top_tokens(
-                        last_hidden_states[:batch_size]
+                if fused_token_dense_scores:
+                    draft_token_ids, selected_logprobs = (
+                        speclink_token_dense_greedy_with_logprob(logits)
                     )
+                    draft_selected_logprobs_by_position.append(selected_logprobs)
                 else:
-                    draft_token_ids = logits.argmax(dim=-1)
+                    draft_logits_by_position.append(logits)
+                    if self.use_local_argmax_reduction:
+                        draft_token_ids = self.model.get_top_tokens(
+                            last_hidden_states[:batch_size]
+                        )
+                    else:
+                        draft_token_ids = logits.argmax(dim=-1)
             else:
                 draft_token_ids = self._greedy_sample(last_hidden_states[:batch_size])
             draft_token_ids_list.append(draft_token_ids)
@@ -791,10 +833,15 @@ class SpecDecodeBaseProposer:
                 temperature=sampling_metadata.temperature,
                 method=self.method,
             )
-        if token_dense:
+        if token_dense_scores:
             speclink_token_dense_record_draft_scores(
                 draft_token_ids=draft_token_ids,
                 logits_by_position=draft_logits_by_position,
+                selected_logprobs_by_position=(
+                    draft_selected_logprobs_by_position
+                    if fused_token_dense_scores
+                    else None
+                ),
                 temperature=sampling_metadata.temperature,
                 method=self.method,
             )

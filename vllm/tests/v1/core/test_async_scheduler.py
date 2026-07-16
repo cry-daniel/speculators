@@ -258,6 +258,55 @@ def test_prefix_caching_for_multi_turn():
         )
 
 
+def test_spec_decode_refill_waits_for_first_async_output():
+    request = create_requests(num_requests=1, num_tokens=10, max_tokens=4)[0]
+    request.spec_token_ids = [-1] * 8
+    scheduler = object.__new__(AsyncScheduler)
+    scheduler._pending_new_request_outputs = {request.request_id}
+    scheduler._last_scheduled_req_ids = set()
+
+    assert scheduler._defer_running_request(request)
+    scheduler._release_pending_new_request(request)
+    assert not scheduler._defer_running_request(request)
+    assert request.spec_token_ids == []
+
+
+def test_stale_async_spec_placeholders_are_discarded():
+    request = create_requests(num_requests=1, num_tokens=10, max_tokens=4)[0]
+    request.spec_token_ids = [-1] * 8
+    request.num_output_placeholders = 0
+    scheduler = object.__new__(AsyncScheduler)
+    scheduler._pending_new_request_outputs = set()
+    scheduler._last_scheduled_req_ids = set()
+
+    assert not scheduler._defer_running_request(request)
+    assert request.spec_token_ids == []
+
+
+def test_async_spec_placeholders_wait_for_unresolved_output():
+    request = create_requests(num_requests=1, num_tokens=10, max_tokens=4)[0]
+    request.spec_token_ids = [-1] * 8
+    request.num_output_placeholders = 1
+    scheduler = object.__new__(AsyncScheduler)
+    scheduler._pending_new_request_outputs = set()
+    scheduler._last_scheduled_req_ids = set()
+
+    assert scheduler._defer_running_request(request)
+    assert request.spec_token_ids == [-1] * 8
+
+
+def test_adjacent_async_spec_placeholders_remain_available():
+    request = create_requests(num_requests=1, num_tokens=10, max_tokens=4)[0]
+    request.spec_token_ids = [-1] * 8
+    request.num_output_placeholders = 1
+    scheduler = object.__new__(AsyncScheduler)
+    scheduler._pending_new_request_outputs = set()
+    scheduler._last_scheduled_req_ids = {request.request_id}
+
+    assert not scheduler._defer_running_request(request)
+    assert request.spec_token_ids == [-1] * 8
+
+
 def test_abort_request_when_structured_output_fsm_cannot_advance():
     scheduler = object.__new__(AsyncScheduler)
     request = create_requests(num_requests=1, num_tokens=1)[0]

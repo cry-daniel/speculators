@@ -11,7 +11,10 @@ import pytest
 import torch
 from utils import skip_unsupported
 
-from vllm.model_executor.layers.batch_invariant import matmul_batch_invariant
+from vllm.model_executor.layers.batch_invariant import (
+    linear_batch_invariant,
+    matmul_batch_invariant,
+)
 from vllm.platforms import current_platform
 
 DEVICE_TYPE = current_platform.device_type
@@ -103,3 +106,25 @@ def test_matmul_batch_invariance(dtype):
     batch_output_a = batch_output[3]
 
     assert torch.equal(standard_output[0], batch_output_a)
+
+
+@skip_unsupported
+@pytest.mark.parametrize("input_shape", [(32, 64), (4, 32, 64)])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_linear_correctness_with_inference_parameter(input_shape, dtype):
+    device = torch.device(DEVICE_TYPE)
+    torch.manual_seed(42)
+
+    input = torch.rand(input_shape, dtype=dtype, device=device)
+    with torch.inference_mode():
+        weight = torch.nn.Parameter(
+            torch.rand((16, 64), dtype=dtype, device=device),
+            requires_grad=False,
+        )
+        bias = torch.rand((16,), dtype=dtype, device=device)
+
+    reference = torch.nn.functional.linear(input, weight, bias)
+    output = linear_batch_invariant(input, weight, bias)
+
+    rtol, atol = (1e-1, 1e-1) if dtype == torch.bfloat16 else (1e-2, 1e-2)
+    torch.testing.assert_close(output, reference, rtol=rtol, atol=atol)

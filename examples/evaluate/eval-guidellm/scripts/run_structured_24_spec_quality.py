@@ -320,6 +320,11 @@ def build_vllm_command(
     speculator_model: str,
     port: int,
 ) -> list[str]:
+    dtype_arg = str(getattr(args, "dtype", "bf16"))
+    vllm_dtype = {
+        "fp16": "float16",
+        "bf16": "bfloat16",
+    }.get(dtype_arg, dtype_arg)
     command = [
         "conda",
         "run",
@@ -347,6 +352,8 @@ def build_vllm_command(
         str(args.max_num_seqs),
         "--generation-config",
         "vllm",
+        "--dtype",
+        vllm_dtype,
         "--speculative-config",
         json.dumps(
             {
@@ -359,6 +366,34 @@ def build_vllm_command(
     ]
     if getattr(args, "enforce_eager", False):
         command.append("--enforce-eager")
+    if (
+        getattr(args, "token_dense_active", False)
+        and not getattr(args, "enforce_eager", False)
+        and not getattr(args, "token_dense_enforce_eager", True)
+    ):
+        cudagraph_mode = str(
+            getattr(args, "token_dense_cudagraph_mode", "none")
+        ).lower()
+        if cudagraph_mode not in {"none", "full_decode_only"}:
+            raise ValueError(
+                "dynamic token routing supports only CUDA graph modes "
+                "none and full_decode_only"
+            )
+        command.extend(
+            [
+                "--compilation-config",
+                json.dumps(
+                    {
+                        "mode": "NONE",
+                        "cudagraph_mode": (
+                            "FULL_DECODE_ONLY"
+                            if cudagraph_mode == "full_decode_only"
+                            else "NONE"
+                        ),
+                    }
+                ),
+            ]
+        )
     return command
 
 

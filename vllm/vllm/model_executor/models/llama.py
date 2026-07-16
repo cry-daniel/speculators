@@ -58,7 +58,8 @@ from vllm.model_executor.model_loader.weight_utils import (
 )
 from vllm.sequence import IntermediateTensors
 from vllm.speclink_breakdown import verify_detail_enabled, verify_timer
-from vllm.speclink_token_dense import mixed_sparse_linear_output
+from vllm.speclink_linear import speclink_linear_forward, speclink_qkv_forward
+from vllm.speclink_mlp import speclink_mlp_forward
 from vllm.v1.attention.backend import AttentionType
 
 from .adapters import as_embedding_model, as_seq_cls_model
@@ -119,11 +120,7 @@ class LlamaMLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
-        gate_up, _ = self.gate_up_proj(x)
-        x = mixed_sparse_linear_output(self.gate_up_proj, x, gate_up)
-        x = self.act_fn(x)
-        down, _ = self.down_proj(x)
-        return mixed_sparse_linear_output(self.down_proj, x, down)
+        return speclink_mlp_forward(self, x)
 
 
 class LlamaAttention(nn.Module):
@@ -230,25 +227,67 @@ class LlamaAttention(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
+        fused_qkv: torch.Tensor | None
+        kv_cache_dummy_dep: torch.Tensor | None = None
         if _SPECLINK_VERIFY_DETAIL:
             with verify_timer("qkv_proj"):
-                qkv, _ = self.qkv_proj(hidden_states)
-                qkv = mixed_sparse_linear_output(self.qkv_proj, hidden_states, qkv)
+                fused_result = speclink_qkv_forward(
+                    self.qkv_proj,
+                    hidden_states,
+                    positions,
+                    self.rotary_emb,
+                    self.attn,
+                    q_size=self.q_size,
+                    kv_size=self.kv_size,
+                )
+                if isinstance(fused_result, tuple):
+                    fused_qkv, kv_cache_dummy_dep = fused_result
+                else:
+                    fused_qkv = fused_result
+                if fused_qkv is None:
+                    qkv, _ = speclink_linear_forward(
+                        self.qkv_proj, hidden_states
+                    )
+                else:
+                    qkv = fused_qkv
         else:
-            qkv, _ = self.qkv_proj(hidden_states)
-            qkv = mixed_sparse_linear_output(self.qkv_proj, hidden_states, qkv)
-        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+            fused_result = speclink_qkv_forward(
+                self.qkv_proj,
+                hidden_states,
+                positions,
+                self.rotary_emb,
+                self.attn,
+                q_size=self.q_size,
+                kv_size=self.kv_size,
+            )
+            if isinstance(fused_result, tuple):
+                fused_qkv, kv_cache_dummy_dep = fused_result
+            else:
+                fused_qkv = fused_result
+            if fused_qkv is None:
+                qkv, _ = speclink_linear_forward(
+                    self.qkv_proj, hidden_states
+                )
+            else:
+                qkv = fused_qkv
+        q, k, v = qkv.split(
+            [self.q_size, self.kv_size, self.kv_size], dim=-1
+        )
         if _SPECLINK_VERIFY_DETAIL:
             with verify_timer("attention"):
-                q, k = self.rotary_emb(positions, q, k)
-                attn_output = self.attn(q, k, v)
-                output, _ = self.o_proj(attn_output)
-                output = mixed_sparse_linear_output(self.o_proj, attn_output, output)
+                if fused_qkv is None:
+                    q, k = self.rotary_emb(positions, q, k)
+                attn_output = self.attn(
+                    q, k, v, kv_cache_dummy_dep=kv_cache_dummy_dep
+                )
+                output, _ = speclink_linear_forward(self.o_proj, attn_output)
         else:
-            q, k = self.rotary_emb(positions, q, k)
-            attn_output = self.attn(q, k, v)
-            output, _ = self.o_proj(attn_output)
-            output = mixed_sparse_linear_output(self.o_proj, attn_output, output)
+            if fused_qkv is None:
+                q, k = self.rotary_emb(positions, q, k)
+            attn_output = self.attn(
+                q, k, v, kv_cache_dummy_dep=kv_cache_dummy_dep
+            )
+            output, _ = speclink_linear_forward(self.o_proj, attn_output)
         return output
 
     def _init_rotary_emb(
@@ -337,7 +376,7 @@ class LlamaDecoderLayer(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         # Self Attention
         if residual is None:
             residual = hidden_states

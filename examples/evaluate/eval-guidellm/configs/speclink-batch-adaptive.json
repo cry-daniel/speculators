@@ -1,0 +1,28 @@
+{
+  "defaults": {
+    "projection_policy": "all",
+    "mixed_projection_policy": "all",
+    "mixed_layers": "all",
+    "linear_strategy": "full_sparse_dense_override",
+    "mlp_strategy": "linear",
+    "fused_batch_mlp": true,
+    "layer_policy": "keep_first_last",
+    "keep_n": 2,
+    "dense_selection": "batch_adaptive",
+    "adaptive_dense_max_requests": 1,
+    "cudagraph_mode": "full",
+    "compilation_mode": "vllm_compile",
+    "sparse_output_mode": "contiguous",
+    "sparse_accumulator": "fp16_qkv_gate",
+    "sparse_value_scale": 1.0,
+    "gate_up_value_scale": 1.0,
+    "row_scale_mode": "cache",
+    "mask_method": "wanda",
+    "flashinfer_autotune": true,
+    "production_fast": true
+  },
+  "models": {
+    "qwen3_8b": {},
+    "llama3_1_8b": {}
+  }
+}

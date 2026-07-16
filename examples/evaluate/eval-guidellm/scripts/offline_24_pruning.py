@@ -666,6 +666,288 @@ def load_mask_cache(path: Path) -> dict[str, Any]:
     return cache
 
 
+def regression_scale_from_moments(
+    cross: Any,
+    sparse_energy: Any,
+    *,
+    min_scale: float,
+    max_scale: float,
+) -> Any:
+    """Return the channelwise least-squares scale for dense ~= scale*sparse."""
+
+    torch = require_torch()
+    if not (0.0 < min_scale <= max_scale and math.isfinite(max_scale)):
+        raise ValueError("row-scale bounds must satisfy 0 < min <= max < inf")
+    scale = torch.ones_like(cross, dtype=torch.float32)
+    valid = sparse_energy > torch.finfo(torch.float32).tiny
+    scale[valid] = cross[valid] / sparse_energy[valid]
+    return scale.clamp_(min=min_scale, max=max_scale)
+
+
+def collect_regression_row_scales(
+    model: Any,
+    tokenizer: Any,
+    prompts: list[str],
+    mask_cache: dict[str, Any],
+    *,
+    max_seq_len: int,
+    batch_size: int,
+    min_scale: float,
+    max_scale: float,
+    device: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Fit output-channel scales on dense-model C4 activations."""
+
+    torch = require_torch()
+    import torch.nn.functional as F
+
+    if batch_size <= 0:
+        raise ValueError("row-scale calibration batch size must be positive")
+    masks = mask_cache.get("masks", {})
+    modules = {
+        name: module
+        for name, module in iter_target_linear_modules(model)
+        if name in masks
+    }
+    if not modules:
+        raise RuntimeError("mask cache does not match any target model modules")
+
+    cross: dict[str, Any] = {}
+    sparse_energy: dict[str, Any] = {}
+    dense_energy: dict[str, Any] = {}
+    token_counts: dict[str, int] = {}
+    current_token_mask: Any | None = None
+    handles = []
+
+    def make_hook(name: str):
+        mask_bytes = masks[name]
+
+        def hook(module: Any, inputs: tuple[Any, ...], output: Any) -> None:
+            if not inputs or not isinstance(output, torch.Tensor):
+                return
+            x = inputs[0].detach()
+            dense = output.detach()
+            flat_x = x.reshape(-1, x.shape[-1])
+            flat_dense = dense.reshape(-1, dense.shape[-1])
+            if current_token_mask is not None and current_token_mask.numel() == flat_x.shape[0]:
+                selected = current_token_mask
+                flat_x = flat_x[selected]
+                flat_dense = flat_dense[selected]
+            if flat_x.numel() == 0:
+                return
+
+            weight = module.weight.detach()
+            out_features, in_features = map(int, weight.shape)
+            groups = in_features // 4
+            group_bytes = unpack_group_bytes(
+                mask_bytes,
+                out_features=out_features,
+                groups=groups,
+            ).to(device=weight.device, non_blocking=True)
+            keep = group_bytes_to_keep(group_bytes, device=weight.device).reshape(
+                out_features, groups * 4
+            )
+            sparse_weight = weight[:, : groups * 4] * keep.to(dtype=weight.dtype)
+            sparse = F.linear(flat_x[:, : groups * 4], sparse_weight, None)
+            if module.bias is not None:
+                flat_dense = flat_dense - module.bias.detach().reshape(1, -1)
+
+            dense_f = flat_dense.float()
+            sparse_f = sparse.float()
+            batch_cross = (dense_f * sparse_f).sum(dim=0)
+            batch_sparse_energy = sparse_f.square().sum(dim=0)
+            batch_dense_energy = dense_f.square().sum(dim=0)
+            if name not in cross:
+                cross[name] = torch.zeros_like(batch_cross)
+                sparse_energy[name] = torch.zeros_like(batch_sparse_energy)
+                dense_energy[name] = torch.zeros_like(batch_dense_energy)
+                token_counts[name] = 0
+            cross[name].add_(batch_cross)
+            sparse_energy[name].add_(batch_sparse_energy)
+            dense_energy[name].add_(batch_dense_energy)
+            token_counts[name] += int(flat_x.shape[0])
+
+        return hook
+
+    for name, module in modules.items():
+        handles.append(module.register_forward_hook(make_hook(name)))
+
+    old_use_cache = getattr(model.config, "use_cache", None)
+    if old_use_cache is not None:
+        model.config.use_cache = False
+    try:
+        with torch.no_grad():
+            for start in range(0, len(prompts), batch_size):
+                batch_prompts = prompts[start : start + batch_size]
+                encoded = tokenizer(
+                    batch_prompts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=max_seq_len,
+                )
+                current_token_mask = encoded.get("attention_mask")
+                if current_token_mask is not None:
+                    current_token_mask = current_token_mask.reshape(-1).bool().to(device)
+                encoded = {key: value.to(device) for key, value in encoded.items()}
+                model(**encoded, use_cache=False)
+                print(
+                    f"  row-scale calibration prompts "
+                    f"{min(start + batch_size, len(prompts))}/{len(prompts)}",
+                    flush=True,
+                )
+    finally:
+        for handle in handles:
+            handle.remove()
+        if old_use_cache is not None:
+            model.config.use_cache = old_use_cache
+
+    row_scales: dict[str, Any] = {}
+    module_stats: dict[str, Any] = {}
+    for name in sorted(cross):
+        scale = regression_scale_from_moments(
+            cross[name],
+            sparse_energy[name],
+            min_scale=min_scale,
+            max_scale=max_scale,
+        )
+        row_scales[name] = scale.to(dtype=torch.float16).cpu()
+        before = (
+            dense_energy[name] - 2.0 * cross[name] + sparse_energy[name]
+        ).clamp_min_(0.0)
+        after = (
+            dense_energy[name]
+            - 2.0 * scale * cross[name]
+            + scale.square() * sparse_energy[name]
+        ).clamp_min_(0.0)
+        module_stats[name] = {
+            "tokens": token_counts[name],
+            "scale_min": float(scale.min().item()),
+            "scale_mean": float(scale.mean().item()),
+            "scale_max": float(scale.max().item()),
+            "relative_mse_before": float(
+                before.sum().div(dense_energy[name].sum().clamp_min(1e-12)).item()
+            ),
+            "relative_mse_after": float(
+                after.sum().div(dense_energy[name].sum().clamp_min(1e-12)).item()
+            ),
+        }
+    return row_scales, {
+        "num_prompts": len(prompts),
+        "max_seq_len": max_seq_len,
+        "batch_size": batch_size,
+        "min_scale": min_scale,
+        "max_scale": max_scale,
+        "num_modules": len(row_scales),
+        "modules": module_stats,
+    }
+
+
+def calibrate_row_scales(args: argparse.Namespace) -> list[Path]:
+    torch = require_torch()
+    set_seed(args.seed)
+    paths = selected_paths(args)
+    model_ids = resolve_models(args)
+    methods = resolve_methods(args, pruning_only=True)
+    dtype = dtype_from_arg(args.dtype)
+    prompts = load_calibration_prompt_file(
+        args.calibration_prompts,
+        args.calibration_num_examples,
+        args.seed,
+    )
+    output_mask_root = args.row_scale_output_root
+    if output_mask_root is None:
+        output_mask_root = paths.mask_root.with_name(
+            f"{paths.mask_root.name}_{args.row_scale_suffix}"
+        )
+    output_mask_root = output_mask_root.resolve()
+    output_mask_root.mkdir(parents=True, exist_ok=True)
+    write_json(
+        output_mask_root / "run_config.json",
+        {
+            "argv": sys.argv,
+            "models": model_ids,
+            "methods": methods,
+            "source_mask_root": str(paths.mask_root),
+            "output_mask_root": str(output_mask_root),
+            "calibration_prompts": str(args.calibration_prompts.resolve()),
+            "calibration_num_examples": len(prompts),
+            "calibration_max_seq_len": args.calibration_max_seq_len,
+            "row_scale_batch_size": args.row_scale_batch_size,
+            "row_scale_min": args.row_scale_min,
+            "row_scale_max": args.row_scale_max,
+            "dtype": args.dtype,
+            "device": args.device,
+            "seed": args.seed,
+            "created_at": timestamp(),
+        },
+    )
+    generated: list[Path] = []
+    for model_label, model_id in model_ids.items():
+        model, tokenizer = load_model_and_tokenizer(
+            model_id,
+            dtype=dtype,
+            device=args.device,
+            trust_remote_code=args.trust_remote_code,
+            local_files_only=args.local_files_only,
+        )
+        try:
+            for method in methods:
+                source_path = mask_path(paths, model_label, method)
+                if not source_path.exists():
+                    raise FileNotFoundError(
+                        f"missing source mask cache {source_path}; run generate-masks first"
+                    )
+                output_path = output_mask_root / model_label / f"{method}.pt"
+                if output_path.exists() and not args.force:
+                    print(f"[INFO] Reusing row-scale cache: {output_path}", flush=True)
+                    generated.append(output_path)
+                    continue
+                cache = load_mask_cache(source_path)
+                print(
+                    f"[INFO] Calibrating row scales for {model_label}/{method}",
+                    flush=True,
+                )
+                row_scales, calibration_stats = collect_regression_row_scales(
+                    model,
+                    tokenizer,
+                    prompts,
+                    cache,
+                    max_seq_len=args.calibration_max_seq_len,
+                    batch_size=args.row_scale_batch_size,
+                    min_scale=args.row_scale_min,
+                    max_scale=args.row_scale_max,
+                    device=args.device,
+                )
+                output_cache = dict(cache)
+                output_cache["row_scales"] = row_scales
+                output_cache["metadata"] = dict(cache.get("metadata", {}))
+                output_cache["metadata"]["row_scale_calibration"] = {
+                    "source_method": method,
+                    "source_path": str(source_path.resolve()),
+                    "prompt_path": str(args.calibration_prompts.resolve()),
+                    **{key: value for key, value in calibration_stats.items() if key != "modules"},
+                }
+                output_cache["stats"] = dict(cache.get("stats", {}))
+                output_cache["stats"]["row_scale_calibration"] = calibration_stats
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                torch.save(output_cache, output_path)
+                write_json(
+                    output_path.with_suffix(".json"),
+                    {
+                        "metadata": output_cache["metadata"],
+                        "row_scale_calibration": calibration_stats,
+                    },
+                )
+                generated.append(output_path)
+        finally:
+            del model, tokenizer
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+    return generated
+
+
 def generate_masks(args: argparse.Namespace) -> list[Path]:
     torch = require_torch()
     set_seed(args.seed)
@@ -902,6 +1184,36 @@ def append_command(path: Path, command: list[str]) -> None:
         handle.write(shlex.join(command) + "\n")
 
 
+def decode_sparse_lm_eval_modes(raw_modes: str) -> str:
+    """Route decode-only sparse runs through the token-dense verifier path.
+
+    The dense speculative mode disables SpecLink structured 2:4 before vLLM
+    starts. For offline-mask decode-only runs, use token_dense_d0 together with
+    sparse_only_decode so every decode verifier row uses the cached 2:4 mask
+    while prefill remains dense.
+    """
+    modes = []
+    for mode in parse_csv_list(raw_modes):
+        if mode in {"eagle3_dense", "eagle3_dense_eager"}:
+            mode = "token_dense_d0"
+        if mode == "dense_ar":
+            continue
+        if mode not in modes:
+            modes.append(mode)
+    return ",".join(modes or ["token_dense_d0"])
+
+
+def lm_eval_modes_for_method(
+    raw_modes: str,
+    *,
+    decode_sparse_only: bool,
+    method: str,
+) -> str:
+    if decode_sparse_only and method != ORIGINAL_METHOD:
+        return decode_sparse_lm_eval_modes(raw_modes)
+    return raw_modes
+
+
 def run_lm_eval(args: argparse.Namespace) -> None:
     paths = selected_paths(args)
     model_ids = resolve_models(args)
@@ -913,13 +1225,27 @@ def run_lm_eval(args: argparse.Namespace) -> None:
 
     for model_label in model_ids:
         for method in methods:
+            mask_cache_for_decode: Path | None = None
             if method == ORIGINAL_METHOD:
                 model_dir = Path(model_ids[model_label]).resolve()
+            elif args.decode_sparse_only:
+                model_dir = Path(model_ids[model_label]).resolve()
+                mask_cache_for_decode = mask_path(paths, model_label, method)
+                if not mask_cache_for_decode.exists():
+                    raise FileNotFoundError(
+                        f"missing mask cache for {model_label}/{method}: "
+                        f"{mask_cache_for_decode}"
+                    )
             else:
                 model_dir = pruned_model_path(paths, model_label, method)
                 if not model_dir.exists():
                     raise FileNotFoundError(f"missing pruned model: {model_dir}")
             eval_dir = paths.output_root / "lm_eval" / model_label / method
+            lm_eval_modes = lm_eval_modes_for_method(
+                args.lm_eval_modes,
+                decode_sparse_only=args.decode_sparse_only,
+                method=method,
+            )
             command = [
                 sys.executable,
                 "-u",
@@ -927,7 +1253,7 @@ def run_lm_eval(args: argparse.Namespace) -> None:
                 "--models",
                 model_label,
                 "--mode",
-                args.lm_eval_modes,
+                lm_eval_modes,
                 "--task",
                 args.lm_eval_task,
                 "--limit",
@@ -957,6 +1283,19 @@ def run_lm_eval(args: argparse.Namespace) -> None:
                 "--num-concurrent",
                 str(args.num_concurrent),
             ]
+            if mask_cache_for_decode is not None:
+                command.extend(
+                    [
+                        "--dtype",
+                        "fp16",
+                        "--token-dense-mask-method",
+                        "inherit",
+                        "--token-dense-linear-strategy",
+                        "sparse_only_decode",
+                        "--token-dense-cudagraph-mode",
+                        "none",
+                    ]
+                )
             if args.apply_chat_template:
                 command.append("--apply-chat-template")
             if args.enforce_eager:
@@ -964,11 +1303,33 @@ def run_lm_eval(args: argparse.Namespace) -> None:
             if args.resume_lm_eval:
                 command.append("--resume")
             append_command(commands_path, command)
+            env = os.environ.copy()
+            if mask_cache_for_decode is not None:
+                env["SPECLINK_STRUCTURED_24_MASK_CACHE"] = str(
+                    mask_cache_for_decode.resolve()
+                )
+                env["SPECLINK_STRUCTURED_24_CACHE_STRICT"] = "1"
+                write_json(
+                    eval_dir / "decode_sparse_env.json",
+                    {
+                        "prefill": "dense",
+                        "decode": "token_dense_structured_24",
+                        "lm_eval_modes": lm_eval_modes,
+                        "routing_mode": (
+                            "token_dense_d0 with sparse_only_decode routes every "
+                            "decode verifier row through the selected cached 2:4 "
+                            "mask; prefill stays dense"
+                        ),
+                        "mask_cache": str(mask_cache_for_decode.resolve()),
+                        "method": method,
+                        "model_label": model_label,
+                    },
+                )
             print(f"[INFO] Running lm-eval for {model_label}/{method}", flush=True)
             completed = subprocess.run(
                 command,
                 cwd=str(SPECULATORS_ROOT),
-                env=os.environ.copy(),
+                env=env,
                 text=True,
                 check=False,
             )
@@ -984,7 +1345,8 @@ def run_lm_eval(args: argparse.Namespace) -> None:
                 write_json(paths.output_root / "lm_eval_failures.json", failures)
                 if not args.keep_going:
                     raise RuntimeError(f"lm-eval failed for {model_label}/{method}")
-    write_combined_summary(paths)
+    rows = write_combined_summary(paths)
+    write_accuracy_plots(args, paths, rows)
     if failures:
         write_json(paths.output_root / "lm_eval_failures.json", failures)
 
@@ -1087,7 +1449,7 @@ def enrich_with_result_json(row: dict[str, Any]) -> None:
         row["accuracy_metric"] = row.get("metric", "")
 
 
-def write_combined_summary(paths: RunPaths) -> None:
+def write_combined_summary(paths: RunPaths) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for summary in sorted((paths.output_root / "lm_eval").rglob("summary.csv")):
         parts = summary.relative_to(paths.output_root / "lm_eval").parts
@@ -1183,6 +1545,326 @@ def write_combined_summary(paths: RunPaths) -> None:
                 )
                 + " |\n"
             )
+    return rows
+
+
+def token_dense_budget(mode: str) -> int | None:
+    prefix = "token_dense_d"
+    if not mode.startswith(prefix):
+        return None
+    raw = mode.removeprefix(prefix)
+    if not raw.isdigit():
+        return None
+    value = int(raw)
+    return value if value in {16, 32, 64, 128} else None
+
+
+def method_display(method: str) -> str:
+    return {
+        "wanda": "Wanda",
+        "proxsparse": "ProxSparse",
+        "maskllm": "MaskLLM",
+    }.get(method, method)
+
+
+def model_color(model_label: str) -> str:
+    return {
+        "qwen3_8b": "#1f77b4",
+        "llama3_1_8b": "#ff7f0e",
+    }.get(model_label, "#4C78A8")
+
+
+def method_marker(method: str) -> str:
+    return {
+        "wanda": "s",
+        "proxsparse": "^",
+        "maskllm": "D",
+        "token_dense": "o",
+    }.get(method, "o")
+
+
+def method_linestyle(method: str) -> str:
+    return {
+        "wanda": "--",
+        "proxsparse": "-.",
+        "maskllm": ":",
+        "token_dense": "-",
+    }.get(method, "--")
+
+
+def offline_accuracy_points(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("status") != "ok":
+            continue
+        mode = str(row.get("mode") or "")
+        if mode != "eagle3_dense" and not mode.startswith("token_dense_"):
+            continue
+        task_name = str(row.get("task_result_name") or row.get("task") or "")
+        if task_name != "gsm8k_cot":
+            continue
+        method = str(row.get("pruning_method") or "")
+        if method not in PRUNING_METHODS:
+            continue
+        accuracy = as_float(row.get("accuracy"))
+        if accuracy is None or not math.isfinite(accuracy):
+            continue
+        points.append(
+            {
+                "model_label": str(
+                    row.get("source_model_label") or row.get("model_label") or ""
+                ),
+                "method": method,
+                "mode": mode,
+                "accuracy": accuracy,
+                "samples": row.get("samples", ""),
+                "source": "offline_24",
+            }
+        )
+    return points
+
+
+def token_dense_accuracy_points(summary_paths: list[Path]) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    for summary_path in summary_paths:
+        for row in read_csv_rows(summary_path):
+            if row.get("status") != "ok":
+                continue
+            task_name = str(row.get("task_result_name") or row.get("task") or "")
+            if task_name != "gsm8k_cot":
+                continue
+            mode = str(row.get("mode") or "")
+            budget = token_dense_budget(mode)
+            if budget is None:
+                continue
+            accuracy = as_float(row.get("score"))
+            if accuracy is None or not math.isfinite(accuracy):
+                continue
+            points.append(
+                {
+                    "model_label": str(row.get("model_label") or ""),
+                    "method": mode,
+                    "budget": budget,
+                    "accuracy": accuracy,
+                    "samples": row.get("samples", ""),
+                    "source": "token_dense",
+                    "summary_path": str(summary_path),
+                }
+            )
+    return points
+
+
+def write_plot_source_csv(path: Path, points: list[dict[str, Any]]) -> None:
+    if not points:
+        return
+    fields = sorted({key for point in points for key in point})
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(points)
+
+
+def write_offline_accuracy_plot(figures_dir: Path, points: list[dict[str, Any]]) -> None:
+    if not points:
+        return
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    method_order = ["wanda", "proxsparse", "maskllm"]
+    model_order = sorted({point["model_label"] for point in points})
+    offsets = {
+        model: (-0.12 if index == 0 else 0.12 if index == 1 else 0.0)
+        for index, model in enumerate(model_order)
+    }
+    fig, ax = plt.subplots(figsize=(7.0, 4.3))
+    for point in points:
+        x = method_order.index(str(point["method"])) + offsets.get(
+            str(point["model_label"]), 0.0
+        )
+        y = float(point["accuracy"])
+        method = str(point["method"])
+        color = model_color(str(point["model_label"]))
+        ax.plot(
+            [x - 0.07, x + 0.07],
+            [y, y],
+            color=color,
+            linestyle=method_linestyle(method),
+            marker=method_marker(method),
+            markersize=6,
+            linewidth=1.8,
+        )
+    ax.set_title("GSM8K CoT offline 2:4 pruning accuracy")
+    ax.set_ylabel("Exact match")
+    ax.set_xticks(
+        range(len(method_order)), [method_display(method) for method in method_order]
+    )
+    ax.set_ylim(0.0, 1.0)
+    ax.grid(axis="y", alpha=0.25)
+    model_handles = [
+        Line2D([0], [0], color=model_color(model), linewidth=2.0, label=model)
+        for model in model_order
+    ]
+    method_handles = [
+        Line2D(
+            [0],
+            [0],
+            color="#333333",
+            linestyle=method_linestyle(method),
+            marker=method_marker(method),
+            linewidth=1.8,
+            label=method_display(method),
+        )
+        for method in method_order
+    ]
+    first = ax.legend(handles=model_handles, title="Model", loc="lower left")
+    ax.add_artist(first)
+    ax.legend(handles=method_handles, title="Method", loc="lower right")
+    fig.tight_layout()
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    fig.savefig(figures_dir / "offline_24_gsm8k_cot_accuracy.png", dpi=200)
+    plt.close(fig)
+
+
+def write_combined_accuracy_plot(
+    figures_dir: Path,
+    offline_points: list[dict[str, Any]],
+    token_dense_points: list[dict[str, Any]],
+) -> None:
+    if not offline_points and not token_dense_points:
+        return
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(11.5, 4.5),
+        gridspec_kw={"width_ratios": [1.7, 1.0]},
+    )
+    model_order = sorted(
+        {point["model_label"] for point in offline_points + token_dense_points}
+    )
+    ax = axes[0]
+    for model in model_order:
+        series = sorted(
+            [point for point in token_dense_points if point["model_label"] == model],
+            key=lambda point: float(point["budget"]),
+        )
+        if not series:
+            continue
+        ax.plot(
+            [float(point["budget"]) for point in series],
+            [float(point["accuracy"]) for point in series],
+            color=model_color(model),
+            linestyle=method_linestyle("token_dense"),
+            marker=method_marker("token_dense"),
+            linewidth=1.8,
+            markersize=5,
+        )
+    ax.set_title("token_dense dense budget")
+    ax.set_xlabel("dense draft-token budget")
+    ax.set_ylabel("GSM8K CoT exact match")
+    ax.set_xticks([16, 32, 64, 128])
+    ax.set_ylim(0.0, 1.0)
+    ax.grid(axis="y", alpha=0.25)
+
+    ax = axes[1]
+    method_order = ["wanda", "proxsparse", "maskllm"]
+    offsets = {
+        model: (-0.12 if index == 0 else 0.12 if index == 1 else 0.0)
+        for index, model in enumerate(model_order)
+    }
+    for point in offline_points:
+        method = str(point["method"])
+        model = str(point["model_label"])
+        x = method_order.index(method) + offsets.get(model, 0.0)
+        y = float(point["accuracy"])
+        ax.plot(
+            [x - 0.07, x + 0.07],
+            [y, y],
+            color=model_color(model),
+            linestyle=method_linestyle(method),
+            marker=method_marker(method),
+            markersize=6,
+            linewidth=1.8,
+        )
+    ax.set_title("offline 2:4 pruning")
+    ax.set_xticks(
+        range(len(method_order)), [method_display(method) for method in method_order]
+    )
+    ax.set_ylim(0.0, 1.0)
+    ax.grid(axis="y", alpha=0.25)
+
+    model_handles = [
+        Line2D([0], [0], color=model_color(model), linewidth=2.0, label=model)
+        for model in model_order
+    ]
+    method_handles = [
+        Line2D(
+            [0],
+            [0],
+            color="#333333",
+            linestyle="-",
+            marker="o",
+            linewidth=1.8,
+            label="token_dense",
+        ),
+        *[
+            Line2D(
+                [0],
+                [0],
+                color="#333333",
+                linestyle=method_linestyle(method),
+                marker=method_marker(method),
+                linewidth=1.8,
+                label=method_display(method),
+            )
+            for method in method_order
+        ],
+    ]
+    fig.legend(
+        handles=model_handles,
+        title="Model",
+        loc="lower center",
+        bbox_to_anchor=(0.33, -0.02),
+        ncol=len(model_handles),
+    )
+    fig.legend(
+        handles=method_handles,
+        title="Method",
+        loc="lower center",
+        bbox_to_anchor=(0.73, -0.02),
+        ncol=2,
+    )
+    fig.tight_layout(rect=(0.0, 0.12, 1.0, 1.0))
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    fig.savefig(figures_dir / "gsm8k_cot_accuracy_method_comparison.png", dpi=200)
+    plt.close(fig)
+
+
+def write_accuracy_plots(
+    args: argparse.Namespace,
+    paths: RunPaths,
+    rows: list[dict[str, Any]],
+) -> None:
+    figures_dir = paths.output_root / "figures"
+    offline_points = offline_accuracy_points(rows)
+    comparison_summaries = [
+        path.resolve() for path in (args.comparison_summary or []) if path.exists()
+    ]
+    token_dense_points = token_dense_accuracy_points(comparison_summaries)
+    write_plot_source_csv(
+        paths.output_root / "accuracy_plot_rows.csv",
+        offline_points + token_dense_points,
+    )
+    write_offline_accuracy_plot(figures_dir, offline_points)
+    write_combined_accuracy_plot(figures_dir, offline_points, token_dense_points)
 
 
 def run_all(args: argparse.Namespace) -> None:
@@ -1218,6 +1900,13 @@ def self_test() -> None:
     assert prox.shape == (2, 4)
     losses = maskllm_option_losses(score)
     assert losses.shape == (1, 2, 6)
+    scale = regression_scale_from_moments(
+        torch.tensor([4.0]),
+        torch.tensor([2.0]),
+        min_scale=0.5,
+        max_scale=3.0,
+    )
+    assert torch.equal(scale, torch.tensor([2.0]))
     print("offline_24_pruning self-test ok")
 
 
@@ -1232,6 +1921,11 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--calibration-cache-root", type=Path, default=DEFAULT_C4_CALIBRATION_CACHE_ROOT)
     parser.add_argument("--calibration-num-examples", type=int, default=512)
     parser.add_argument("--calibration-max-seq-len", type=int, default=512)
+    parser.add_argument("--row-scale-output-root", type=Path, default=None)
+    parser.add_argument("--row-scale-suffix", default="regression")
+    parser.add_argument("--row-scale-batch-size", type=int, default=1)
+    parser.add_argument("--row-scale-min", type=float, default=0.5)
+    parser.add_argument("--row-scale-max", type=float, default=1.5)
     parser.add_argument("--dtype", choices=["bf16", "fp16"], default="bf16")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--seed", type=int, default=42)
@@ -1265,6 +1959,21 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--enforce-eager", action="store_true")
     parser.add_argument("--resume-lm-eval", action="store_true")
     parser.add_argument("--keep-going", action="store_true")
+    parser.add_argument(
+        "--decode-sparse-only",
+        action="store_true",
+        help=(
+            "Load the original dense model and attach the selected offline 2:4 "
+            "mask only to token-dense decode/verification routing. Prefill stays dense."
+        ),
+    )
+    parser.add_argument(
+        "--comparison-summary",
+        action="append",
+        type=Path,
+        default=[],
+        help="Optional token_dense/lm-eval summary CSV to include in the combined accuracy plot.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1273,7 +1982,13 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ["generate-masks", "materialize-models", "run-lm-eval", "run-all"]:
+    for name in [
+        "generate-masks",
+        "calibrate-row-scales",
+        "materialize-models",
+        "run-lm-eval",
+        "run-all",
+    ]:
         sub = subparsers.add_parser(name, formatter_class=argparse.ArgumentDefaultsHelpFormatter)
         add_common_args(sub)
     subparsers.add_parser("self-test")
@@ -1286,6 +2001,9 @@ def main() -> None:
         self_test()
     elif args.command == "generate-masks":
         generate_masks(args)
+    elif args.command == "calibrate-row-scales":
+        for path in calibrate_row_scales(args):
+            print(path)
     elif args.command == "materialize-models":
         materialize_models(args)
     elif args.command == "run-lm-eval":

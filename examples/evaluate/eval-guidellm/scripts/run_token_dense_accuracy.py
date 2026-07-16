@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Token-dense t00-t10 accuracy sweep under vLLM EAGLE3 serving."""
+"""Token-dense fixed-budget accuracy sweep under vLLM EAGLE3 serving."""
 
 from __future__ import annotations
 
 import argparse
 import csv
 import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -43,6 +44,7 @@ from run_structured_24_spec_quality import (  # noqa: E402
 )
 from token_dense_methods import (  # noqa: E402
     DEFAULT_TOKEN_DENSE_METHODS,
+    DEFAULT_TOKEN_DENSE_MASK_ROOT,
     MethodConfig,
     method_env,
     parse_method_config,
@@ -67,10 +69,23 @@ CSV_FIELDS = [
     "spec_accepted_tokens_case",
     "spec_draft_tokens_case",
     "effective_sparse_fraction",
-    "token_dense_threshold",
+    "token_dense_budget",
+    "token_dense_linear_strategy",
+    "token_dense_mlp_strategy",
+    "token_dense_sparse_value_scale",
+    "token_dense_row_scale_mode",
+    "token_dense_row_scale_max",
+    "token_dense_sparse_output_mode",
+    "token_dense_sparse_accumulator",
     "token_dense_dense_draft_fraction",
     "token_dense_sparse_draft_fraction",
+    "token_dense_scored_draft_tokens",
+    "token_dense_forced_dense_tokens",
     "token_dense_missing_score_tokens",
+    "cutlass_sparse24_dynamic_backend_requested",
+    "cutlass_sparse24_dynamic_backend_enabled",
+    "cutlass_sparse24_dynamic_prepack_module_count",
+    "cutlass_sparse24_skipped_module_count",
     "failed",
     "error",
 ]
@@ -141,6 +156,8 @@ def run_method(
     stats_path = case_dir / "vllm_structured_24_stats.json"
     env = method_env(args, model_label=model_label, method=method, stats_path=stats_path)
     previous_enforce_eager = args.enforce_eager
+    previous_token_dense_active = getattr(args, "token_dense_active", False)
+    args.token_dense_active = method.base_method == "token_dense"
     if method.base_method == "token_dense" and args.token_dense_enforce_eager:
         args.enforce_eager = True
 
@@ -178,6 +195,7 @@ def run_method(
             metric["spec_acceptance_rate_case"] = accepted / drafted if accepted is not None and drafted else None
     finally:
         args.enforce_eager = previous_enforce_eager
+        args.token_dense_active = previous_token_dense_active
         stop_process(process)
         if args.server_shutdown_settle_s > 0:
             time.sleep(args.server_shutdown_settle_s)
@@ -203,6 +221,7 @@ def run_method(
 
 def make_rows(
     *,
+    args: argparse.Namespace,
     model_label: str,
     model_id: str,
     method: MethodConfig,
@@ -236,10 +255,44 @@ def make_rows(
                 "spec_accepted_tokens_case": sparse_metric.get("spec_accepted_tokens_case"),
                 "spec_draft_tokens_case": sparse_metric.get("spec_draft_tokens_case"),
                 "effective_sparse_fraction": mask_stats.get("effective_sparse_fraction"),
-                "token_dense_threshold": method.token_dense_threshold,
+                "token_dense_budget": method.token_dense_budget,
+                "token_dense_linear_strategy": token_dense_stats.get(
+                    "linear_strategy",
+                    mask_stats.get("speclink_kernel_linear_strategy"),
+                ),
+                "token_dense_mlp_strategy": token_dense_stats.get("mlp_strategy"),
+                "token_dense_sparse_value_scale": (
+                    args.token_dense_sparse_value_scale
+                ),
+                "token_dense_row_scale_mode": args.token_dense_row_scale_mode,
+                "token_dense_row_scale_max": args.token_dense_row_scale_max,
+                "token_dense_sparse_output_mode": (
+                    args.token_dense_sparse_output_mode
+                ),
+                "token_dense_sparse_accumulator": (
+                    args.token_dense_sparse_accumulator
+                ),
                 "token_dense_dense_draft_fraction": token_dense_stats.get("dense_draft_fraction"),
                 "token_dense_sparse_draft_fraction": token_dense_stats.get("sparse_draft_fraction"),
+                "token_dense_scored_draft_tokens": token_dense_stats.get(
+                    "scored_draft_tokens"
+                ),
+                "token_dense_forced_dense_tokens": token_dense_stats.get(
+                    "forced_dense_tokens"
+                ),
                 "token_dense_missing_score_tokens": token_dense_stats.get("missing_score_tokens"),
+                "cutlass_sparse24_dynamic_backend_requested": mask_stats.get(
+                    "cutlass_sparse24_dynamic_backend_requested"
+                ),
+                "cutlass_sparse24_dynamic_backend_enabled": mask_stats.get(
+                    "cutlass_sparse24_dynamic_backend_enabled"
+                ),
+                "cutlass_sparse24_dynamic_prepack_module_count": mask_stats.get(
+                    "cutlass_sparse24_dynamic_prepack_module_count"
+                ),
+                "cutlass_sparse24_skipped_module_count": len(
+                    mask_stats.get("cutlass_sparse24_skipped_modules") or []
+                ),
                 "failed": bool(sparse_metric.get("failed", False)),
                 "error": sparse_metric.get("error", ""),
             }
@@ -264,12 +317,29 @@ def write_summary(output_root: Path, rows: list[dict[str, Any]], args: argparse.
         handle.write("- Serving uses vLLM + EAGLE3 speculative decoding.\n")
         handle.write("- Only the target/base model is masked; the EAGLE3 drafter remains dense.\n")
         handle.write("- `activation_aware` is the C4 activation-RMS 2:4 baseline.\n")
-        handle.write("- `token_dense_tXX` keeps high-confidence draft-token rows dense at threshold `XX / 10`.\n")
+        handle.write("- `token_dense_dN` keeps the global Top-N scored draft verifier rows dense by per-request cumulative DLM confidence.\n")
+        handle.write(f"- Token-dense linear strategy: `{args.token_dense_linear_strategy}`.\n")
+        handle.write(f"- Token-dense MLP strategy: `{args.token_dense_mlp_strategy}`.\n")
+        handle.write(
+            "- Retained sparse value scale: "
+            f"`{args.token_dense_sparse_value_scale}`.\n"
+        )
+        handle.write(
+            "- Per-row sparse scaling: "
+            f"`{args.token_dense_row_scale_mode}` "
+            f"(maximum `{args.token_dense_row_scale_max}`).\n"
+        )
+        handle.write(
+            "- Sparse output mode: "
+            f"`{args.token_dense_sparse_output_mode}`.\n"
+        )
+        handle.write("- Sparse rows use the strict `vllm.speclink_kernel` CUTLASS MMA.SP backend; missing masks or unsupported shapes fail at load time.\n")
         handle.write("- Accuracy is measured on GSM8K and/or math_reasoning only.\n\n")
         handle.write("## Inputs\n\n")
         handle.write(f"- models: `{args.models}`\n")
         handle.write(f"- methods: `{args.methods}`\n")
         handle.write(f"- datasets: `{args.datasets}`\n")
+        handle.write(f"- dtype: `{args.dtype}`\n")
         handle.write(f"- calibration RMS root: `{args.calibration_cache_root}`\n\n")
         handle.write("## Accuracy Summary\n\n")
         handle.write("| model | dataset | method | dense | sparse | delta | drop | examples |\n")
@@ -282,13 +352,13 @@ def write_summary(output_root: Path, rows: list[dict[str, Any]], args: argparse.
                 )
             )
         handle.write("\n## Files\n\n")
-        handle.write("- `token_dense_threshold_quality.csv`: unified accuracy comparison.\n")
+        handle.write("- `token_dense_budget_quality.csv`: unified accuracy comparison.\n")
         handle.write("- `token_dense_accuracy.csv`: accuracy-only comparison.\n")
         handle.write("- `runs/*/*/vllm_structured_24_stats.json`: vLLM-side mask proof and cache metadata.\n")
 
 
 def write_outputs(output_root: Path, rows: list[dict[str, Any]], args: argparse.Namespace) -> None:
-    write_csv(output_root / "token_dense_threshold_quality.csv", rows)
+    write_csv(output_root / "token_dense_budget_quality.csv", rows)
     write_csv(output_root / "token_dense_accuracy.csv", rows)
     write_summary(output_root, rows, args)
 
@@ -297,7 +367,7 @@ def configure_smoke(args: argparse.Namespace) -> None:
     if not args.smoke:
         return
     args.models = "qwen3_8b"
-    args.methods = "activation_aware,token_dense_t00,token_dense_t10"
+    args.methods = "activation_aware,token_dense_d16,token_dense_d32"
     args.datasets = "gsm8k"
     args.gsm8k_num_examples = 1
     args.math_num_examples = 0
@@ -328,6 +398,33 @@ def run(args: argparse.Namespace) -> None:
     if "activation_aware" not in methods:
         methods = ["activation_aware", *methods]
     method_configs = [parse_method_config(method) for method in methods]
+    if any(method.base_method == "token_dense" for method in method_configs) and args.dtype != "fp16":
+        raise ValueError("token_dense_d* methods require --dtype fp16")
+    if (
+        not math.isfinite(args.token_dense_sparse_value_scale)
+        or args.token_dense_sparse_value_scale <= 0.0
+    ):
+        raise ValueError(
+            "--token-dense-sparse-value-scale must be finite and positive"
+        )
+    if (
+        not math.isfinite(args.token_dense_row_scale_max)
+        or args.token_dense_row_scale_max < 1.0
+    ):
+        raise ValueError(
+            "--token-dense-row-scale-max must be finite and at least 1.0"
+        )
+    if (
+        any(method.base_method == "token_dense" for method in method_configs)
+        and args.token_dense_linear_strategy == "full_sparse_residual"
+        and (
+            args.token_dense_sparse_value_scale != 1.0
+            or args.token_dense_row_scale_mode == "variance"
+        )
+    ):
+        raise ValueError(
+            "sparse value scaling is incompatible with exact full_sparse_residual"
+        )
     dense_config = MethodConfig(label="dense", base_method="dense", policy="dense")
 
     write_json(
@@ -341,6 +438,29 @@ def run(args: argparse.Namespace) -> None:
             "speculators": speculators,
             "calibration_cache_root": str(args.calibration_cache_root.resolve()),
             "num_spec_tokens": args.num_spec_tokens,
+            "dtype": args.dtype,
+            "token_dense_linear_strategy": args.token_dense_linear_strategy,
+            "token_dense_mlp_strategy": args.token_dense_mlp_strategy,
+            "token_dense_score_backend": args.token_dense_score_backend,
+            "token_dense_fast_plan": args.token_dense_fast_plan,
+            "token_dense_reuse_buffers": args.token_dense_reuse_buffers,
+            "token_dense_contiguous_scatter": (
+                args.token_dense_contiguous_scatter
+            ),
+            "token_dense_sparse_value_scale": (
+                args.token_dense_sparse_value_scale
+            ),
+            "token_dense_row_scale_mode": args.token_dense_row_scale_mode,
+            "token_dense_row_scale_max": args.token_dense_row_scale_max,
+            "token_dense_sparse_output_mode": (
+                args.token_dense_sparse_output_mode
+            ),
+            "token_dense_sparse_accumulator": (
+                args.token_dense_sparse_accumulator
+            ),
+            "token_dense_cudagraph_mode": args.token_dense_cudagraph_mode,
+            "token_dense_mask_root": str(args.token_dense_mask_root),
+            "token_dense_mask_method": args.token_dense_mask_method,
             "created_at": timestamp(),
             "smoke": args.smoke,
         },
@@ -377,6 +497,7 @@ def run(args: argparse.Namespace) -> None:
             )
             rows.extend(
                 make_rows(
+                    args=args,
                     model_label=model_label,
                     model_id=model_id,
                     method=method_config,
@@ -393,7 +514,7 @@ def run(args: argparse.Namespace) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Token-dense t00-t10 accuracy benchmark under EAGLE3.",
+        description="Token-dense fixed-budget accuracy benchmark under EAGLE3.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--models", default="qwen3_8b,llama3_1_8b")
@@ -410,6 +531,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-num-seqs", type=int, default=8)
     parser.add_argument("--max-num-batched-tokens", type=int, default=8192)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.88)
+    parser.add_argument("--dtype", choices=("bf16", "fp16"), default="fp16")
     parser.add_argument("--port-base", type=int, default=8170)
     parser.add_argument("--health-timeout-s", type=float, default=900.0)
     parser.add_argument("--request-timeout-s", type=float, default=900.0)
@@ -422,6 +544,115 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--enforce-eager", action="store_true")
     parser.add_argument("--token-dense-enforce-eager", action="store_true", default=True)
     parser.add_argument("--no-token-dense-enforce-eager", dest="token_dense_enforce_eager", action="store_false")
+    parser.add_argument(
+        "--token-dense-cudagraph-mode",
+        choices=("none", "full", "full_decode_only"),
+        default="none",
+        help=(
+            "CUDA graph mode for token-dense routing. Dynamic routing only "
+            "supports none; other values fail before server startup."
+        ),
+    )
+    parser.add_argument(
+        "--token-dense-linear-strategy",
+        choices=(
+            "auto",
+            "full_sparse_residual",
+            "full_sparse_dense_override",
+            "split_dense_sparse",
+            "sparse_only_decode",
+        ),
+        default="auto",
+    )
+    parser.add_argument(
+        "--token-dense-mlp-strategy",
+        choices=("auto", "gate_only", "linear"),
+        default="auto",
+    )
+    parser.add_argument(
+        "--token-dense-score-backend",
+        choices=("torch_softmax", "triton_selected", "triton_fused"),
+        default="triton_fused",
+    )
+    parser.add_argument(
+        "--token-dense-fast-plan",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--token-dense-reuse-buffers",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--token-dense-contiguous-scatter",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        "--token-dense-sparse-value-scale",
+        type=float,
+        default=1.0,
+        help="Scale retained 2:4 values at prepack time without runtime overhead.",
+    )
+    parser.add_argument(
+        "--token-dense-row-scale-mode",
+        choices=("none", "cache", "variance"),
+        default="cache",
+        help=(
+            "Use cached per-row scales or compute activation-weighted "
+            "variance-preserving scales during prepack."
+        ),
+    )
+    parser.add_argument(
+        "--token-dense-row-scale-max",
+        type=float,
+        default=1.25,
+        help="Upper clamp for variance-preserving per-row scales.",
+    )
+    parser.add_argument(
+        "--token-dense-sparse-output-mode",
+        choices=("contiguous", "fused_mlp", "view_mlp", "view_mlp_o"),
+        default="contiguous",
+        help=(
+            "Keep every sparse output row-major or preserve CUTLASS views for "
+            "MLP and attention output projections."
+        ),
+    )
+    parser.add_argument(
+        "--token-dense-sparse-accumulator",
+        choices=(
+            "fp32",
+            "fp16",
+            "fp16_gate",
+            "fp16_gate_down",
+            "fp16_qkv_gate",
+        ),
+        default="fp32",
+        help=(
+            "Accumulator policy for supported CUTLASS sparse decode tiles; "
+            "fp16_gate keeps QKV/output/down on FP32; fp16_gate_down keeps "
+            "QKV/output on FP32; fp16_qkv_gate keeps output/down on FP32."
+        ),
+    )
+    parser.add_argument("--token-dense-mask-root", type=Path, default=DEFAULT_TOKEN_DENSE_MASK_ROOT)
+    parser.add_argument(
+        "--token-dense-mask-method",
+        choices=(
+            "wanda",
+            "covwanda",
+            "proxsparse",
+            "maskllm",
+            "inherit",
+            "none",
+        ),
+        default="wanda",
+    )
+    parser.add_argument(
+        "--production-fast",
+        action="store_true",
+        help="Disable token-dense debug stats and use static hot-path env reads.",
+    )
     parser.add_argument("--resume", action="store_true", default=True)
     parser.add_argument("--no-resume", dest="resume", action="store_false")
     parser.add_argument("--smoke", action="store_true")

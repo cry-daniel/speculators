@@ -46,7 +46,7 @@ from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
 from vllm.sequence import IntermediateTensors
 from vllm.speclink_breakdown import verify_detail_enabled, verify_timer
-from vllm.speclink_token_dense import mixed_sparse_linear_output
+from vllm.speclink_linear import speclink_linear_forward, speclink_qkv_forward
 from vllm.transformers_utils.config import set_default_rope_theta
 from vllm.v1.attention.backend import AttentionType
 
@@ -146,52 +146,111 @@ class Qwen3Attention(nn.Module):
         self.q_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
         self.k_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
 
+    def _split_and_normalize_qkv(
+        self, qkv: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        q, k, v = qkv.split(
+            [self.q_size, self.kv_size, self.kv_size], dim=-1
+        )
+        q_by_head = q.view(
+            *q.shape[:-1],
+            q.shape[-1] // self.head_dim,
+            self.head_dim,
+        )
+        q = self.q_norm(q_by_head).view(q.shape)
+        k_by_head = k.view(
+            *k.shape[:-1],
+            k.shape[-1] // self.head_dim,
+            self.head_dim,
+        )
+        k = self.k_norm(k_by_head).view(k.shape)
+        return q, k, v
+
     def forward(
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
+        fused_qkv: torch.Tensor | None
+        kv_cache_dummy_dep: torch.Tensor | None = None
         if _SPECLINK_VERIFY_DETAIL:
             with verify_timer("qkv_proj"):
-                qkv, _ = self.qkv_proj(hidden_states)
-                qkv = mixed_sparse_linear_output(self.qkv_proj, hidden_states, qkv)
+                fused_result = speclink_qkv_forward(
+                    self.qkv_proj,
+                    hidden_states,
+                    positions,
+                    self.rotary_emb,
+                    self.attn,
+                    q_size=self.q_size,
+                    kv_size=self.kv_size,
+                    q_weight=self.q_norm.weight,
+                    k_weight=self.k_norm.weight,
+                    epsilon=self.q_norm.variance_epsilon,
+                )
+                if isinstance(fused_result, tuple):
+                    fused_qkv, kv_cache_dummy_dep = fused_result
+                else:
+                    fused_qkv = fused_result
+                if fused_qkv is None:
+                    qkv, _ = speclink_linear_forward(
+                        self.qkv_proj, hidden_states
+                    )
+                else:
+                    qkv = fused_qkv
         else:
-            qkv, _ = self.qkv_proj(hidden_states)
-            qkv = mixed_sparse_linear_output(self.qkv_proj, hidden_states, qkv)
-        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+            fused_result = speclink_qkv_forward(
+                self.qkv_proj,
+                hidden_states,
+                positions,
+                self.rotary_emb,
+                self.attn,
+                q_size=self.q_size,
+                kv_size=self.kv_size,
+                q_weight=self.q_norm.weight,
+                k_weight=self.k_norm.weight,
+                epsilon=self.q_norm.variance_epsilon,
+            )
+            if isinstance(fused_result, tuple):
+                fused_qkv, kv_cache_dummy_dep = fused_result
+            else:
+                fused_qkv = fused_result
+            if fused_qkv is None:
+                qkv, _ = speclink_linear_forward(
+                    self.qkv_proj, hidden_states
+                )
+            else:
+                qkv = fused_qkv
         if _SPECLINK_VERIFY_DETAIL:
             with verify_timer("attention"):
-                # Add qk-norm
-                q_by_head = q.view(
-                    *q.shape[:-1], q.shape[-1] // self.head_dim, self.head_dim
-                )
-                q_by_head = self.q_norm(q_by_head)
-                q = q_by_head.view(q.shape)
-                k_by_head = k.view(
-                    *k.shape[:-1], k.shape[-1] // self.head_dim, self.head_dim
-                )
-                k_by_head = self.k_norm(k_by_head)
-                k = k_by_head.view(k.shape)
-                q, k = self.rotary_emb(positions, q, k)
-                attn_output = self.attn(q, k, v)
-                output, _ = self.o_proj(attn_output)
-                output = mixed_sparse_linear_output(self.o_proj, attn_output, output)
+                with verify_timer("qkv_norm_rope"):
+                    if fused_qkv is None:
+                        q, k, v = self._split_and_normalize_qkv(qkv)
+                        q, k = self.rotary_emb(positions, q, k)
+                    else:
+                        q, k, v = qkv.split(
+                            [self.q_size, self.kv_size, self.kv_size],
+                            dim=-1,
+                        )
+                with verify_timer("attention_kernel"):
+                    attn_output = self.attn(
+                        q, k, v, kv_cache_dummy_dep=kv_cache_dummy_dep
+                    )
+                with verify_timer("o_proj"):
+                    output, _ = speclink_linear_forward(
+                        self.o_proj, attn_output
+                    )
         else:
-            # Add qk-norm
-            q_by_head = q.view(
-                *q.shape[:-1], q.shape[-1] // self.head_dim, self.head_dim
+            if fused_qkv is None:
+                q, k, v = self._split_and_normalize_qkv(qkv)
+                q, k = self.rotary_emb(positions, q, k)
+            else:
+                q, k, v = qkv.split(
+                    [self.q_size, self.kv_size, self.kv_size], dim=-1
+                )
+            attn_output = self.attn(
+                q, k, v, kv_cache_dummy_dep=kv_cache_dummy_dep
             )
-            q_by_head = self.q_norm(q_by_head)
-            q = q_by_head.view(q.shape)
-            k_by_head = k.view(
-                *k.shape[:-1], k.shape[-1] // self.head_dim, self.head_dim
-            )
-            k_by_head = self.k_norm(k_by_head)
-            k = k_by_head.view(k.shape)
-            q, k = self.rotary_emb(positions, q, k)
-            attn_output = self.attn(q, k, v)
-            output, _ = self.o_proj(attn_output)
-            output = mixed_sparse_linear_output(self.o_proj, attn_output, output)
+            output, _ = speclink_linear_forward(self.o_proj, attn_output)
         return output
 
 
@@ -251,7 +310,7 @@ class Qwen3DecoderLayer(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         # Self Attention
         if residual is None:
             residual = hidden_states
@@ -266,9 +325,10 @@ class Qwen3DecoderLayer(nn.Module):
         # Fully Connected
         if _SPECLINK_VERIFY_DETAIL:
             with verify_timer("ffn"):
-                hidden_states, residual = self.post_attention_layernorm(
-                    hidden_states, residual
-                )
+                with verify_timer("post_attention_norm"):
+                    hidden_states, residual = self.post_attention_layernorm(
+                        hidden_states, residual
+                    )
                 hidden_states = self.mlp(hidden_states)
         else:
             hidden_states, residual = self.post_attention_layernorm(

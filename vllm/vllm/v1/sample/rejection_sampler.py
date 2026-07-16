@@ -14,6 +14,7 @@ from vllm.logger import init_logger
 from vllm.speclink_confidence_trace import (
     label_verified_tokens as speclink_trace_label_verified_tokens,
 )
+from vllm.speclink_token_dense import sparse_only_decode_enabled
 from vllm.triton_utils import tl, triton
 from vllm.v1.outputs import LogprobsLists, LogprobsTensors, SamplerOutput
 from vllm.v1.sample.logits_processor.builtin import MinTokensLogitsProcessor
@@ -86,6 +87,8 @@ class RejectionSampler(nn.Module):
                 device=device,
             )
         self.synthetic_mode = self.synthetic_conditional_rates is not None
+        self._speclink_fast_path_logged = False
+        self._speclink_fast_path_skip_reasons: set[str] = set()
 
     def forward(
         self,
@@ -128,6 +131,43 @@ class RejectionSampler(nn.Module):
         # logits tensor. This means any in-place operations on bonus_logits
         # won't affect the original logits tensor.
         assert logits is not None
+        fast_path_disabled_reason = self._speclink_fast_path_disabled_reason(
+            sampling_metadata
+        )
+        if not fast_path_disabled_reason:
+            if not self._speclink_fast_path_logged:
+                logger.info(
+                    "Using SpecLink greedy low-memory rejection sampler fast path"
+                )
+                self._speclink_fast_path_logged = True
+            output_token_ids = speclink_greedy_rejection_sample(
+                logits,
+                target_logits_indices,
+                bonus_logits_indices,
+                metadata,
+                sampling_metadata,
+                synthetic_mode=self.synthetic_mode,
+                synthetic_conditional_rates=self.synthetic_conditional_rates,
+            )
+            speclink_trace_label_verified_tokens(
+                metadata=metadata,
+                output_token_ids=output_token_ids,
+                target_logits=None,
+            )
+            return SamplerOutput(
+                sampled_token_ids=output_token_ids,
+                logprobs_tensors=None,
+            )
+        if (
+            sparse_only_decode_enabled()
+            and fast_path_disabled_reason not in self._speclink_fast_path_skip_reasons
+        ):
+            logger.info(
+                "SpecLink greedy low-memory rejection sampler fast path disabled: %s",
+                fast_path_disabled_reason,
+            )
+            self._speclink_fast_path_skip_reasons.add(fast_path_disabled_reason)
+
         bonus_logits = logits[bonus_logits_indices]
         bonus_sampler_output = self.sampler(
             logits=bonus_logits,
@@ -201,6 +241,48 @@ class RejectionSampler(nn.Module):
             sampled_token_ids=output_token_ids,
             logprobs_tensors=logprobs_tensors,
         )
+
+    def _speclink_fast_path_disabled_reason(
+        self,
+        sampling_metadata: SamplingMetadata,
+    ) -> str:
+        if not sparse_only_decode_enabled():
+            return "sparse_only_decode_disabled"
+        if not sampling_metadata.all_greedy:
+            return (
+                "not_all_greedy"
+                f"(all_random={sampling_metadata.all_random},"
+                f"temperature={sampling_metadata.temperature is not None},"
+                f"logprobs={sampling_metadata.max_num_logprobs})"
+            )
+        if sampling_metadata.max_num_logprobs is not None:
+            return "logprobs_requested"
+        if self.synthetic_mode:
+            return "synthetic_mode"
+        if sampling_metadata.allowed_token_ids_mask is not None:
+            return "allowed_token_ids_mask"
+        if sampling_metadata.bad_words_token_ids:
+            return "bad_words"
+        if not sampling_metadata.no_penalties:
+            return "penalties"
+        if self._speclink_has_active_non_argmax_processors(sampling_metadata):
+            return "active_non_argmax_invariant_processors"
+        return ""
+
+    @staticmethod
+    def _speclink_has_active_non_argmax_processors(
+        sampling_metadata: SamplingMetadata,
+    ) -> bool:
+        for processor in sampling_metadata.logitsprocs.non_argmax_invariant:
+            if isinstance(processor, MinTokensLogitsProcessor):
+                if not any(
+                    stop_token_ids and len(output_token_ids) < min_tokens
+                    for min_tokens, output_token_ids, stop_token_ids
+                    in processor.min_toks.values()
+                ):
+                    continue
+            return True
+        return False
 
     def _get_logprobs_tensors(
         self,
@@ -698,6 +780,60 @@ def sample_recovered_tokens(
     return recovered_token_ids
 
 
+def speclink_greedy_rejection_sample(
+    logits: torch.Tensor,
+    target_logits_indices: torch.Tensor,
+    bonus_logits_indices: torch.Tensor,
+    metadata: SpecDecodeMetadata,
+    sampling_metadata: SamplingMetadata,
+    synthetic_mode: bool = False,
+    synthetic_conditional_rates: torch.Tensor | None = None,
+) -> torch.Tensor:
+    assert sampling_metadata.all_greedy
+    assert not synthetic_mode
+    batch_size = len(metadata.num_draft_tokens)
+    target_argmax = indexed_row_argmax(logits, target_logits_indices)
+    bonus_token_ids = indexed_row_argmax(logits, bonus_logits_indices)
+    output_token_ids = torch.full(
+        (batch_size, metadata.max_spec_len + 1),
+        PLACEHOLDER_TOKEN_ID,
+        dtype=torch.int32,
+        device=logits.device,
+    )
+    rejection_greedy_sample_kernel[(batch_size,)](
+        output_token_ids,
+        metadata.cu_num_draft_tokens,
+        metadata.draft_token_ids,
+        target_argmax,
+        bonus_token_ids,
+        None,
+        metadata.max_spec_len,
+        None,
+        synthetic_conditional_rates,
+        SYNTHETIC_MODE=False,
+    )
+    return output_token_ids
+
+
+def indexed_row_argmax(
+    logits: torch.Tensor,
+    row_indices: torch.Tensor,
+) -> torch.Tensor:
+    row_indices = row_indices.contiguous()
+    num_rows = int(row_indices.numel())
+    out = torch.empty(num_rows, dtype=torch.int32, device=logits.device)
+    if num_rows == 0:
+        return out
+    indexed_row_argmax_kernel[(num_rows,)](
+        logits,
+        row_indices,
+        out,
+        logits.shape[1],
+        BLOCK_SIZE=1024,
+    )
+    return out
+
+
 # NOTE(woosuk): Avoid specialization to prevent unnecessary recompilation.
 @triton.jit(do_not_specialize=["max_spec_len"])
 def rejection_greedy_sample_kernel(
@@ -750,6 +886,33 @@ def rejection_greedy_sample_kernel(
             output_token_ids_ptr + req_idx * (max_spec_len + 1) + num_draft_tokens,
             bonus_token_id,
         )
+
+
+@triton.jit
+def indexed_row_argmax_kernel(
+    logits_ptr,  # [num_logit_rows, vocab_size]
+    row_indices_ptr,  # [num_rows]
+    out_ptr,  # [num_rows]
+    vocab_size,
+    BLOCK_SIZE: tl.constexpr,
+):
+    out_idx = tl.program_id(0)
+    row = tl.load(row_indices_ptr + out_idx)
+    best_val = -float("inf")
+    best_id = 0
+    for v in range(0, vocab_size, BLOCK_SIZE):
+        offsets = v + tl.arange(0, BLOCK_SIZE)
+        mask = offsets < vocab_size
+        values = tl.load(
+            logits_ptr + row * vocab_size + offsets,
+            mask=mask,
+            other=-float("inf"),
+        ).to(tl.float32)
+        local_max, local_id = tl.max(values, axis=0, return_indices=True)
+        if local_max > best_val:
+            best_val = local_max
+            best_id = v + local_id
+    tl.store(out_ptr + out_idx, best_id)
 
 
 # NOTE(woosuk): Avoid specialization to prevent unnecessary recompilation.

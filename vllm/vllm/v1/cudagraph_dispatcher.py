@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import os
 from collections.abc import Set as AbstractSet
 from dataclasses import replace
 from itertools import product
@@ -8,8 +9,18 @@ from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.forward_context import BatchDescriptor
 from vllm.logger import init_logger
 from vllm.lora.utils import get_captured_lora_counts
+from vllm.speclink_token_dense import PURE_BATCH_DENSE_SELECTIONS
 
 logger = init_logger(__name__)
+
+_SPECLINK_DUAL_GRAPH = (
+    os.getenv("SPECLINK_TOKEN_DENSE_ENABLE", "0")
+    in {"1", "true", "TRUE", "yes", "YES", "on", "ON"}
+    and os.getenv("SPECLINK_TOKEN_DENSE_DENSE_SELECTION", "").strip()
+    in PURE_BATCH_DENSE_SELECTIONS
+    and os.getenv("SPECLINK_TOKEN_DENSE_GRAPH_ROUTING", "0")
+    in {"1", "true", "TRUE", "yes", "YES", "on", "ON"}
+)
 
 
 class CudagraphDispatcher:
@@ -161,6 +172,15 @@ class CudagraphDispatcher:
             f"Invalid cudagraph runtime mode for keys: {runtime_mode}"
         )
         self.cudagraph_keys[runtime_mode].add(batch_descriptor)
+        if (
+            _SPECLINK_DUAL_GRAPH
+            and runtime_mode == CUDAGraphMode.FULL
+            and batch_descriptor.uniform
+            and batch_descriptor.speclink_route == 0
+        ):
+            self.cudagraph_keys[runtime_mode].add(
+                replace(batch_descriptor, speclink_route=1)
+            )
 
     def initialize_cudagraph_keys(
         self, cudagraph_mode: CUDAGraphMode, uniform_decode_query_len: int = 1
@@ -339,9 +359,13 @@ class CudagraphDispatcher:
         for mode in [CUDAGraphMode.PIECEWISE, CUDAGraphMode.FULL]:
             descs = list(self.cudagraph_keys[mode])
             if descs:
-                # Sort by (num_tokens, num_active_loras) descending
+                # Sort by shape and specialization key, largest first.
                 descs.sort(
-                    key=lambda d: (d.num_tokens, d.num_active_loras),
+                    key=lambda d: (
+                        d.num_tokens,
+                        d.speclink_route,
+                        d.num_active_loras,
+                    ),
                     reverse=True,
                 )
                 result.append((mode, descs))

@@ -122,8 +122,12 @@ from vllm.speclink_token_dense import (
     begin_propose_context as speclink_token_dense_begin_propose_context,
     begin_verify_context as speclink_token_dense_begin_verify_context,
     build_verify_dense_mask as speclink_token_dense_build_verify_dense_mask,
+    cudagraph_route as speclink_token_dense_cudagraph_route,
     end_propose_context as speclink_token_dense_end_propose_context,
     end_verify_context as speclink_token_dense_end_verify_context,
+    pad_verify_plan_for_cudagraph as speclink_token_dense_pad_verify_plan,
+    prepare_cudagraph_plan as speclink_token_dense_prepare_cudagraph_plan,
+    verify_plan_fits_cudagraph as speclink_token_dense_plan_fits_cudagraph,
 )
 from vllm.smurfs_dynamic import (
     current_draft_limit as smurfs_dynamic_current_draft_limit,
@@ -535,6 +539,10 @@ def _speclink_add_verify_detail(
     event["verify_attention_ms"] = attention_ms
     event["verify_ffn_ms"] = ffn_ms
     event["verify_model_other_ms"] = max(0.0, verify_ms - known_ms)
+    for name, elapsed_ms in detail.items():
+        if name in {"qkv_proj", "attention", "ffn"}:
+            continue
+        event[f"verify_{name}_ms"] = float(elapsed_ms)
 
 
 # SPECLINK_MOTIVATION_BREAKDOWN_PATCH_END
@@ -2214,6 +2222,7 @@ class GPUModelRunner(
                 req_ids=self.input_batch.req_ids,
                 num_scheduled_tokens=num_scheduled_tokens,
                 num_draft_tokens=num_draft_tokens,
+                num_decode_draft_tokens=num_decode_draft_tokens,
                 cu_num_scheduled_tokens=cu_num_tokens,
                 total_num_scheduled_tokens=total_num_scheduled_tokens,
                 device=self.device,
@@ -4074,6 +4083,54 @@ class GPUModelRunner(
             )
 
             num_tokens_padded = batch_desc.num_tokens
+            speclink_cudagraph_route = speclink_token_dense_cudagraph_route(
+                token_dense_mask
+            )
+            if (
+                cudagraph_mode == CUDAGraphMode.FULL
+                and speclink_cudagraph_route
+            ):
+                batch_desc = replace(
+                    batch_desc,
+                    speclink_route=speclink_cudagraph_route,
+                )
+            if (
+                cudagraph_mode == CUDAGraphMode.FULL
+                and not speclink_token_dense_plan_fits_cudagraph(
+                    token_dense_mask,
+                    actual_rows=num_tokens_unpadded,
+                    padded_rows=num_tokens_padded,
+                )
+            ):
+                (
+                    cudagraph_mode,
+                    batch_desc,
+                    should_ubatch,
+                    num_tokens_across_dp,
+                    cudagraph_stats,
+                ) = self._determine_batch_execution_and_padding(
+                    num_tokens=num_tokens_unpadded,
+                    num_reqs=num_reqs,
+                    num_scheduled_tokens_np=num_scheduled_tokens_np,
+                    max_num_scheduled_tokens=max_num_scheduled_tokens,
+                    use_cascade_attn=cascade_attn_prefix_lens is not None,
+                    num_encoder_reqs=len(
+                        scheduler_output.scheduled_encoder_inputs
+                    ),
+                    force_eager=True,
+                )
+                num_tokens_padded = batch_desc.num_tokens
+            if cudagraph_mode == CUDAGraphMode.FULL:
+                token_dense_mask = speclink_token_dense_pad_verify_plan(
+                    token_dense_mask,
+                    actual_rows=num_tokens_unpadded,
+                    padded_rows=num_tokens_padded,
+                    device=self.device,
+                )
+                if num_tokens_padded > num_tokens_unpadded:
+                    self.input_ids.gpu[
+                        num_tokens_unpadded:num_tokens_padded
+                    ].zero_()
             num_reqs_padded = (
                 batch_desc.num_reqs if batch_desc.num_reqs is not None else num_reqs
             )
@@ -4239,6 +4296,12 @@ class GPUModelRunner(
             speclink_token_dense_end_verify_context(speclink_token_dense_verify_token)
             end_verify_detail(speclink_verify_detail_token)
 
+        _speclink_breakdown_sync()
+        if speclink_breakdown_event is not None:
+            speclink_breakdown_event["verify_model_forward_ms"] = (
+                _speclink_elapsed_ms(speclink_verify_start)
+            )
+        speclink_postprocess_start = _speclink_breakdown_now()
         with record_function_or_nullcontext("gpu_model_runner: postprocess"):
             if self.use_aux_hidden_state_outputs:
                 # True when EAGLE 3 is used.
@@ -4300,6 +4363,9 @@ class GPUModelRunner(
 
         _speclink_breakdown_sync()
         if speclink_breakdown_event is not None:
+            speclink_breakdown_event["verify_postprocess_ms"] = (
+                _speclink_elapsed_ms(speclink_postprocess_start)
+            )
             speclink_breakdown_event["verify_forward_ms"] = _speclink_elapsed_ms(
                 speclink_verify_start
             )
@@ -5596,6 +5662,7 @@ class GPUModelRunner(
         is_graph_capturing: bool = False,
         num_active_loras: int = 0,
         profile_seq_lens: int | None = None,
+        speclink_route: int = 0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Run a dummy forward pass to warm up/profile run or capture the
@@ -5718,6 +5785,8 @@ class GPUModelRunner(
                 f"Cudagraph runtime mode mismatch in dummy_run. "
                 f"Expected {_cudagraph_mode}, but got {cudagraph_runtime_mode}."
             )
+        if speclink_route:
+            batch_desc = replace(batch_desc, speclink_route=speclink_route)
 
         num_tokens_padded = batch_desc.num_tokens
         num_reqs_padded = (
@@ -5868,13 +5937,25 @@ class GPUModelRunner(
                     slot_mapping=slot_mappings,
                 ),
             ):
-                outputs = self.model(
-                    input_ids=input_ids,
-                    positions=positions,
-                    intermediate_tensors=intermediate_tensors,
-                    inputs_embeds=inputs_embeds,
-                    **model_kwargs,
+                graph_plan = speclink_token_dense_prepare_cudagraph_plan(
+                    num_tokens_padded,
+                    self.device,
+                    uniform_decode=uniform_decode,
+                    route=speclink_route,
                 )
+                graph_plan_token = speclink_token_dense_begin_verify_context(
+                    graph_plan
+                )
+                try:
+                    outputs = self.model(
+                        input_ids=input_ids,
+                        positions=positions,
+                        intermediate_tensors=intermediate_tensors,
+                        inputs_embeds=inputs_embeds,
+                        **model_kwargs,
+                    )
+                finally:
+                    speclink_token_dense_end_verify_context(graph_plan_token)
 
             if self.use_aux_hidden_state_outputs:
                 hidden_states, _ = outputs
@@ -6493,6 +6574,7 @@ class GPUModelRunner(
                 remove_lora=False,
                 num_active_loras=desc.num_active_loras,
                 profile_seq_lens=profile_seq_lens,
+                speclink_route=desc.speclink_route,
             )
         self._dummy_run(
             desc.num_tokens,
@@ -6504,6 +6586,7 @@ class GPUModelRunner(
             num_active_loras=desc.num_active_loras,
             is_graph_capturing=True,
             profile_seq_lens=profile_seq_lens,
+            speclink_route=desc.speclink_route,
         )
 
     def _capture_cudagraphs(

@@ -50,6 +50,63 @@ def _topk_log_softmax_kernel(
 
 
 @triton.jit
+def _greedy_token_logprob_blocks_kernel(
+    local_token_ids_ptr,
+    local_max_ptr,
+    local_sum_exp_ptr,
+    logits_ptr,
+    logits_stride,
+    vocab_size,
+    BLOCK_SIZE: tl.constexpr,
+):
+    req_idx = tl.program_id(0)
+    block_idx = tl.program_id(1)
+    block = block_idx * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = block < vocab_size
+    logits = tl.load(
+        logits_ptr + req_idx * logits_stride + block,
+        mask=mask,
+        other=float("-inf"),
+    ).to(tl.float32)
+    block_max, block_token_idx = tl.max(logits, axis=0, return_indices=True)
+    safe_block_max = tl.where(block_max == float("-inf"), 0.0, block_max)
+    block_sum_exp = tl.sum(tl.exp(logits - safe_block_max), axis=0)
+    offset = req_idx * tl.num_programs(1) + block_idx
+    tl.store(local_token_ids_ptr + offset, block_idx * BLOCK_SIZE + block_token_idx)
+    tl.store(local_max_ptr + offset, block_max)
+    tl.store(local_sum_exp_ptr + offset, block_sum_exp)
+
+
+@triton.jit
+def _greedy_token_logprob_reduce_kernel(
+    token_ids_ptr,
+    logprobs_ptr,
+    local_token_ids_ptr,
+    local_max_ptr,
+    local_sum_exp_ptr,
+    num_blocks,
+    PADDED_NUM_BLOCKS: tl.constexpr,
+):
+    req_idx = tl.program_id(0)
+    block = tl.arange(0, PADDED_NUM_BLOCKS)
+    mask = block < num_blocks
+    offset = req_idx * num_blocks + block
+    block_max = tl.load(
+        local_max_ptr + offset,
+        mask=mask,
+        other=float("-inf"),
+    )
+    max_val, max_block_idx = tl.max(block_max, axis=0, return_indices=True)
+    block_sum_exp = tl.load(local_sum_exp_ptr + offset, mask=mask, other=0.0)
+    sum_exp = tl.sum(block_sum_exp * tl.exp(block_max - max_val), axis=0)
+    token_id = tl.load(
+        local_token_ids_ptr + req_idx * num_blocks + max_block_idx
+    )
+    tl.store(token_ids_ptr + req_idx, token_id)
+    tl.store(logprobs_ptr + req_idx, -tl.log(sum_exp))
+
+
+@triton.jit
 def _ranks_kernel(
     output_ptr,
     logits_ptr,
@@ -90,6 +147,43 @@ def compute_token_logprobs(
         PADDED_TOPK=triton.next_power_of_2(num_logprobs),
     )
     return logprobs
+
+
+def compute_greedy_token_ids_and_logprobs(
+    logits: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return greedy token IDs and their normalized logprobs without softmax."""
+    batch_size, vocab_size = logits.shape
+    block_size = 1024
+    num_blocks = triton.cdiv(vocab_size, block_size)
+    local_token_ids = logits.new_empty(
+        (batch_size, num_blocks), dtype=torch.int32
+    )
+    local_max = logits.new_empty((batch_size, num_blocks), dtype=torch.float32)
+    local_sum_exp = logits.new_empty(
+        (batch_size, num_blocks), dtype=torch.float32
+    )
+    token_ids = logits.new_empty(batch_size, dtype=torch.int64)
+    logprobs = logits.new_empty(batch_size, dtype=torch.float32)
+    _greedy_token_logprob_blocks_kernel[(batch_size, num_blocks)](
+        local_token_ids,
+        local_max,
+        local_sum_exp,
+        logits,
+        logits.stride(0),
+        vocab_size,
+        BLOCK_SIZE=block_size,  # type: ignore
+    )
+    _greedy_token_logprob_reduce_kernel[(batch_size,)](
+        token_ids,
+        logprobs,
+        local_token_ids,
+        local_max,
+        local_sum_exp,
+        num_blocks,
+        PADDED_NUM_BLOCKS=triton.next_power_of_2(num_blocks),
+    )
+    return token_ids, logprobs
 
 
 def compute_topk_logprobs(

@@ -1,0 +1,26 @@
+task: math_reasoning
+dataset_path: json
+dataset_name: null
+dataset_kwargs:
+  data_files:
+    test: data/math_reasoning_guidellm_min128.jsonl
+output_type: generate_until
+test_split: test
+num_fewshot: 0
+doc_to_text: !function math_reasoning_utils.doc_to_text
+doc_to_target: !function math_reasoning_utils.doc_to_target
+process_results: !function math_reasoning_utils.process_results
+metric_list:
+  - metric: exact_match
+    aggregation: mean
+    higher_is_better: true
+generation_kwargs:
+  until:
+    - "Question:"
+    - "</s>"
+    - "<|im_end|>"
+  do_sample: false
+  temperature: 0.0
+metadata:
+  version: 1.0
+  protocol: local_math_reasoning_zero_shot

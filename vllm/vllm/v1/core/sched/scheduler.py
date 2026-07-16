@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import itertools
+import os
 import time
 from collections import defaultdict, deque
 from collections.abc import Iterable
@@ -66,6 +67,7 @@ from vllm.v1.structured_output import StructuredOutputManager
 from vllm.v1.utils import record_function_or_nullcontext
 
 logger = init_logger(__name__)
+_SPECLINK_TRUTHY = {"1", "true", "TRUE", "yes", "YES", "on", "ON"}
 
 
 class Scheduler(SchedulerInterface):
@@ -303,6 +305,43 @@ class Scheduler(SchedulerInterface):
 
         self._pause_state: PauseState = PauseState.UNPAUSED
 
+    @staticmethod
+    def _speclink_sparse_only_decode_enabled() -> bool:
+        return (
+            os.getenv("SPECLINK_TOKEN_DENSE_ENABLE", "0") in _SPECLINK_TRUTHY
+            and os.getenv("SPECLINK_TOKEN_DENSE_LINEAR_STRATEGY", "").strip()
+            == "sparse_only_decode"
+            and os.getenv(
+                "SPECLINK_DECODE_ONLY_ISOLATE_BATCHES",
+                "0",
+            )
+            in _SPECLINK_TRUTHY
+        )
+
+    def _speclink_decode_verify_budget(self) -> int:
+        override = os.getenv("SPECLINK_DECODE_ONLY_TOKEN_BUDGET")
+        if override:
+            return max(1, int(override))
+        if self.num_spec_tokens <= 0:
+            return self.max_num_scheduled_tokens
+        return self.max_num_running_reqs * (self.num_spec_tokens + 1)
+
+    @staticmethod
+    def _speclink_is_decode_verify_request(request: Request) -> bool:
+        return (
+            bool(request.spec_token_ids)
+            and request.num_computed_tokens >= request.num_prompt_tokens
+        )
+
+    def _speclink_has_decode_verify_work(self) -> bool:
+        return any(
+            self._speclink_is_decode_verify_request(request)
+            for request in self.running
+        )
+
+    def _defer_running_request(self, request: Request) -> bool:
+        return False
+
     def _mamba_block_aligned_split(
         self,
         request: Request,
@@ -373,6 +412,12 @@ class Scheduler(SchedulerInterface):
         req_to_new_blocks: dict[str, KVCacheBlocks] = {}
         num_scheduled_tokens: dict[str, int] = {}
         token_budget = self.max_num_scheduled_tokens
+        speclink_decode_only_step = (
+            self._speclink_sparse_only_decode_enabled()
+            and self._speclink_has_decode_verify_work()
+        )
+        if speclink_decode_only_step:
+            token_budget = min(token_budget, self._speclink_decode_verify_budget())
         if self._pause_state == PauseState.PAUSED_ALL:
             # Do not schedule any requests when paused.
             token_budget = 0
@@ -392,6 +437,14 @@ class Scheduler(SchedulerInterface):
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
             request = self.running[req_index]
+            if self._defer_running_request(request):
+                req_index += 1
+                continue
+            if speclink_decode_only_step and not (
+                self._speclink_is_decode_verify_request(request)
+            ):
+                req_index += 1
+                continue
 
             if (
                 request.num_output_placeholders > 0
@@ -569,7 +622,15 @@ class Scheduler(SchedulerInterface):
             assert len(scheduled_loras) <= self.lora_config.max_loras
 
         # Next, schedule the WAITING requests.
-        if not preempted_reqs and self._pause_state == PauseState.UNPAUSED:
+        can_schedule_waiting = (
+            not speclink_decode_only_step
+            or len(scheduled_spec_decode_tokens) < self.max_num_running_reqs
+        )
+        if (
+            can_schedule_waiting
+            and not preempted_reqs
+            and self._pause_state == PauseState.UNPAUSED
+        ):
             step_skipped_waiting = create_request_queue(self.policy)
 
             while (self.waiting or self.skipped_waiting) and token_budget > 0:

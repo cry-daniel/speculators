@@ -59,7 +59,8 @@ from vllm.model_executor.model_loader.weight_utils import (
     maybe_remap_kv_scale_name,
 )
 from vllm.sequence import IntermediateTensors
-from vllm.speclink_token_dense import mixed_sparse_linear_output
+from vllm.speclink_linear import speclink_linear_forward
+from vllm.speclink_mlp import speclink_mlp_forward
 from vllm.transformers_utils.config import is_interleaved, set_default_rope_theta
 from vllm.v1.attention.backend import AttentionType
 
@@ -112,11 +113,7 @@ class Qwen2MLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
-        gate_up, _ = self.gate_up_proj(x)
-        gate_up = mixed_sparse_linear_output(self.gate_up_proj, x, gate_up)
-        x = self.act_fn(gate_up)
-        down, _ = self.down_proj(x)
-        return mixed_sparse_linear_output(self.down_proj, x, down)
+        return speclink_mlp_forward(self, x)
 
 
 class Qwen2Attention(nn.Module):
@@ -213,7 +210,7 @@ class Qwen2Attention(nn.Module):
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
     ) -> torch.Tensor:
-        qkv, _ = self.qkv_proj(hidden_states)
+        qkv, _ = speclink_linear_forward(self.qkv_proj, hidden_states)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
 
         # Apply QK normalization if enabled (before RoPE)
@@ -234,7 +231,7 @@ class Qwen2Attention(nn.Module):
 
         q, k = self.rotary_emb(positions, q, k)
         attn_output = self.attn(q, k, v)
-        output, _ = self.o_proj(attn_output)
+        output, _ = speclink_linear_forward(self.o_proj, attn_output)
         return output
 
 

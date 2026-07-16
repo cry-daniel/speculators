@@ -57,6 +57,8 @@ class BatchDescriptor:
     (like fused_moe_lora) whose grid size depends on num_active_loras
     to be properly captured.
     """
+    speclink_route: int = 0
+    """Optional SpecLink dense/sparse CUDA graph specialization key."""
 
 
 def _compute_sp_num_tokens(

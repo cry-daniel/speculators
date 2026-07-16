@@ -140,17 +140,29 @@ def matmul_kernel_persistent(
 
 
 def matmul_persistent(
-    a: torch.Tensor, b: torch.Tensor, bias: torch.Tensor | None = None
+    a: torch.Tensor,
+    b: torch.Tensor,
+    bias: torch.Tensor | None = None,
+    *,
+    transpose_b: bool = False,
 ):
     # Check constraints.
-    assert a.shape[1] == b.shape[0], "Incompatible dimensions"
+    if transpose_b:
+        assert a.shape[1] == b.shape[1], "Incompatible dimensions"
+    else:
+        assert a.shape[1] == b.shape[0], "Incompatible dimensions"
     assert a.dtype == b.dtype, "Incompatible dtypes"
     assert bias is None or bias.dim() == 1, (
         "Currently assuming bias is 1D, let Horace know if you run into this"
     )
     NUM_SMS = num_compute_units(a.device.index)
     M, K = a.shape
-    K, N = b.shape
+    if transpose_b:
+        N, K = b.shape
+        stride_bk, stride_bn = b.stride(1), b.stride(0)
+    else:
+        K, N = b.shape
+        stride_bk, stride_bn = b.stride(0), b.stride(1)
     dtype = a.dtype
     # Allocates output.
     c = torch.empty((M, N), device=a.device, dtype=dtype)
@@ -202,8 +214,8 @@ def matmul_persistent(
         K,  #
         a.stride(0),
         a.stride(1),  #
-        b.stride(0),
-        b.stride(1),  #
+        stride_bk,
+        stride_bn,  #
         c.stride(0),
         c.stride(1),  #
         NUM_SMS=NUM_SMS,  #
@@ -901,11 +913,15 @@ def rms_norm_batch_invariant(
 
 
 def linear_batch_invariant(input, weight, bias=None):
-    output = matmul_batch_invariant(input, weight.t())
-
-    if bias is not None:
-        output = output + bias
-    return output
+    input_shape = input.shape
+    input_2d = input.reshape(-1, input_shape[-1])
+    output_2d = matmul_persistent(
+        input_2d,
+        weight,
+        bias=bias,
+        transpose_b=True,
+    )
+    return output_2d.reshape(input_shape[:-1] + (weight.shape[0],))
 
 
 _batch_invariant_MODE = False
@@ -930,6 +946,9 @@ def enable_batch_invariant_mode():
     _batch_invariant_MODE = True
     _batch_invariant_LIB = torch.library.Library("aten", "IMPL")
 
+    # The direct linear path uses this kernel on every CUDA architecture.
+    _fp16_block_size_n = 256 if get_max_shared_memory_bytes() > 106496 else 128
+
     if current_platform.is_device_capability_family(
         100
     ) or current_platform.is_device_capability_family(80):
@@ -940,9 +959,6 @@ def enable_batch_invariant_mode():
         _batch_invariant_LIB.impl("aten::matmul", matmul_batch_invariant, "CUDA")
         _batch_invariant_LIB.impl("aten::linear", linear_batch_invariant, "CUDA")
 
-        # Query the shared memory size and set block size
-        # accordingly to avoid triton OutOfResources
-        _fp16_block_size_n = 256 if get_max_shared_memory_bytes() > 106496 else 128
     else:
         # Only source of batch invariance for Hopper is split-k, can disable through
         # cuBLAS workspace config

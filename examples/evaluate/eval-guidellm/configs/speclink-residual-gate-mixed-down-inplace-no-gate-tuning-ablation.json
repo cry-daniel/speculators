@@ -1,0 +1,60 @@
+{
+  "defaults": {
+    "projection_policy": "qkv_gate_up_down",
+    "mixed_projection_policy": "qkv_gate_up_down",
+    "mixed_layers": "all",
+    "linear_strategy": "full_sparse_residual",
+    "mlp_strategy": "linear",
+    "fused_batch_mlp": true,
+    "inline_swiglu_mlp": false,
+    "routed_swiglu_mlp": true,
+    "sparse_gate_dense_down": false,
+    "direct_gate_residual_epilogue": true,
+    "contiguous_down_input": true,
+    "paired_gate_shape_tuning": false,
+    "paired_inplace_down": true,
+    "qkv_heterogeneous_routing": false,
+    "qkv_paired_routing": true,
+    "qkv_paired_max_rows": 704,
+    "layer_policy": "keep_first_last",
+    "dense_layers": "",
+    "attention_dense_layers": "",
+    "gate_up_dense_layers": "",
+    "down_dense_layers": "",
+    "dense_cap": -1,
+    "dense_selection": "balanced_confidence",
+    "balanced_start_position": 0,
+    "sparse_bonus": true,
+    "sparse_unscored_decode": true,
+    "cudagraph_mode": "full_decode_only",
+    "compilation_mode": "vllm_compile",
+    "sparse_output_mode": "contiguous",
+    "sparse_accumulator": "fp16_qkv_gate",
+    "sparse_value_scale": 1.0,
+    "gate_up_value_scale": 1.0,
+    "gate_up_hybrid": "none",
+    "row_scale_mode": "none",
+    "row_scale_max": 1.5,
+    "mask_method": "wanda",
+    "mask_root": "examples/evaluate/eval-guidellm/data/c4_calibration/offline_24_masks/c4_64_seed42_fp16_max256_regression",
+    "release_dense_weights": true,
+    "retain_dense_weight": "none",
+    "flashinfer_autotune": true,
+    "production_fast": true
+  },
+  "models": {
+    "qwen3_8b": {
+      "keep_n": 2,
+      "dense_ratio": 0.125,
+      "dense_min_per_request": 1,
+      "dense_cap": 32
+    },
+    "llama3_1_8b": {
+      "keep_n": 3,
+      "mask_root": "examples/evaluate/eval-guidellm/data/c4_calibration/offline_24_masks/c4_512_seed42_bf16_max512",
+      "dense_ratio": 0.3125,
+      "dense_min_per_request": 1,
+      "dense_cap": 64
+    }
+  }
+}
