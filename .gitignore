@@ -179,6 +179,8 @@ results*
 
 doc
 
+/tests/
+
 # Local generated speculator model variants
 examples/evaluate/eval-guidellm/models/
 examples/evaluate/eval-guidellm/results/
