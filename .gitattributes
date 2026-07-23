@@ -1,0 +1,2 @@
+# Preserve byte-identical vendored snapshots, including upstream whitespace.
+other_systems/upstream/** -whitespace

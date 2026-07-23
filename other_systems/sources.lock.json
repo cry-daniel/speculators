@@ -1,0 +1,20 @@
+{
+  "flash_llm": {
+    "repository": "https://github.com/AlibabaResearch/flash-llm",
+    "commit": "1d2828ac63fac1bc8dd80f54adfac0e9494399bc",
+    "license": "Apache-2.0"
+  },
+  "sparta": {
+    "repository": "https://github.com/microsoft/SparTA",
+    "commit": "183513c5b721fa8b970e19fd95887bad9a16c1fe",
+    "artifact_repository": "https://github.com/xxyux/SpInfer",
+    "artifact_commit": "ee689064cc0435817074686f390fee04c02d8d5c",
+    "implementation": "SpInfer artifact kernel_benchmark/sparTA.h",
+    "license": "MIT (SparTA repository); Apache-2.0 (artifact kernel)"
+  },
+  "spinfer": {
+    "repository": "https://github.com/xxyux/SpInfer",
+    "commit": "ee689064cc0435817074686f390fee04c02d8d5c",
+    "license": "Apache-2.0"
+  }
+}
