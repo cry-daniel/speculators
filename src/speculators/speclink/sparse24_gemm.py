@@ -158,17 +158,24 @@ def assert_24_weight(weight24: torch.Tensor) -> None:
             f"{_WEIGHT_ALIGNMENT}, got {(n, k)}"
         )
 
-    nonzero_per_group = weight24.reshape(n, k // 4, 4).ne(0).sum(dim=-1)
-    valid = nonzero_per_group.eq(2)
-    if not bool(valid.all().item()):
-        first_bad = (~valid).nonzero(as_tuple=False)[0]
-        row = int(first_bad[0].item())
-        group = int(first_bad[1].item())
-        count = int(nonzero_per_group[row, group].item())
-        raise ValueError(
-            "weight24 is not exact 2:4 on the K axis: "
-            f"row {row}, K-group {group} contains {count} nonzeros"
+    # Validate in row chunks.  A full-size Llama gate_up temporary boolean is
+    # hundreds of MiB and can make model-load conversion OOM even though the
+    # final one-weight representation fits comfortably.
+    for start in range(0, n, 512):
+        stop = min(n, start + 512)
+        nonzero_per_group = (
+            weight24[start:stop].reshape(stop - start, k // 4, 4).ne(0).sum(dim=-1)
         )
+        valid = nonzero_per_group.eq(2)
+        if not bool(valid.all().item()):
+            first_bad = (~valid).nonzero(as_tuple=False)[0]
+            row = start + int(first_bad[0].item())
+            group = int(first_bad[1].item())
+            count = int(nonzero_per_group[int(first_bad[0]), group].item())
+            raise ValueError(
+                "weight24 is not exact 2:4 on the K axis: "
+                f"row {row}, K-group {group} contains {count} nonzeros"
+            )
 
 
 def prepare_sparse24_weight(

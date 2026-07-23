@@ -73,6 +73,9 @@ struct VisitorTransposeAuxStore {
 
   struct Arguments {
     Element* ptr_output = nullptr;
+    // Optional distance, in elements, between parallel split-K partial
+    // outputs.  A zero stride preserves the normal single-slice ABI.
+    int64_t split_k_stride = 0;
   };
   using Params = Arguments;
 
@@ -193,6 +196,8 @@ struct VisitorTransposeAuxStore {
       int token = tile_n + local_token;
       int output_channels = int(cute::get<0>(problem_shape));
       int tokens = int(cute::get<1>(problem_shape));
+      int64_t split_k_offset =
+          int64_t(blockIdx.z) * params_ptr->split_k_stride;
 
       CUTLASS_PRAGMA_UNROLL
       for (int warp_row_group = 0; warp_row_group < kWarpRowGroups;
@@ -215,6 +220,7 @@ struct VisitorTransposeAuxStore {
         cutlass::arch::global_store<StoreType, sizeof(StoreType)>(
             packed,
             static_cast<void*>(params_ptr->ptr_output +
+                               split_k_offset +
                                int64_t(token) * output_channels +
                                output_channel),
             full_guard);
@@ -225,7 +231,8 @@ struct VisitorTransposeAuxStore {
           CUTLASS_PRAGMA_UNROLL
           for (int i = 0; i < kElementsPerThread; ++i) {
             if (output_channel + i < output_channels) {
-              params_ptr->ptr_output[int64_t(token) * output_channels +
+              params_ptr->ptr_output[split_k_offset +
+                                     int64_t(token) * output_channels +
                                      output_channel + i] = output_fragment[i];
             }
           }

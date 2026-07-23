@@ -165,10 +165,17 @@ def capture_graph(
     return CapturedGraph(graph, output, unroll)
 
 
-def create_multistream_resources(device: torch.device) -> MultiStreamResources:
+def create_multistream_resources(
+    device: torch.device,
+    *,
+    dense_priority: int = 0,
+    sparse_priority: int = 0,
+) -> MultiStreamResources:
+    """Create graph-safe streams; lower numeric priorities run first."""
+
     capture = torch.cuda.Stream(device=device)
-    dense = torch.cuda.Stream(device=device)
-    sparse = torch.cuda.Stream(device=device)
+    dense = torch.cuda.Stream(device=device, priority=dense_priority)
+    sparse = torch.cuda.Stream(device=device, priority=sparse_priority)
     handles = {
         int(stream.cuda_stream)
         for stream in (capture, dense, sparse, torch.cuda.default_stream(device))

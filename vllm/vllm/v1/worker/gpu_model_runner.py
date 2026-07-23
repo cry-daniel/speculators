@@ -124,6 +124,7 @@ from vllm.speclink_token_dense import (
     build_verify_dense_mask as speclink_token_dense_build_verify_dense_mask,
     end_propose_context as speclink_token_dense_end_propose_context,
     end_verify_context as speclink_token_dense_end_verify_context,
+    graph_route_enabled as speclink_token_dense_graph_route_enabled,
 )
 from vllm.smurfs_dynamic import (
     current_draft_limit as smurfs_dynamic_current_draft_limit,
@@ -4220,7 +4221,18 @@ class GPUModelRunner(
                     batch_descriptor=batch_desc,
                     ubatch_slices=ubatch_slices_padded,
                     slot_mapping=slot_mappings,
-                    skip_compiled=has_encoder_input,
+                    # Pure prefill/non-speculative calls have no route and use
+                    # a separately guarded compiled fused-dense graph.  Only a
+                    # real dynamic route outside an exact FULL verifier graph
+                    # must remain eager (notably mixed prefill/decode).
+                    skip_compiled=(
+                        has_encoder_input
+                        or (
+                            speclink_token_dense_graph_route_enabled()
+                            and token_dense_mask is not None
+                            and cudagraph_mode != CUDAGraphMode.FULL
+                        )
+                    ),
                 ),
                 record_function_or_nullcontext("gpu_model_runner: forward"),
                 self.maybe_get_kv_connector_output(
@@ -5866,6 +5878,12 @@ class GPUModelRunner(
                     batch_descriptor=batch_desc,
                     ubatch_slices=ubatch_slices_padded,
                     slot_mapping=slot_mappings,
+                    # The residual-complement compiled graph deliberately uses
+                    # a fixed GPU route workspace. Memory profiling has no
+                    # verifier route and must retain the eager all-dense path.
+                    skip_compiled=(
+                        is_profile and speclink_token_dense_graph_route_enabled()
+                    ),
                 ),
             ):
                 outputs = self.model(

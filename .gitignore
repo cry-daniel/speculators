@@ -195,3 +195,21 @@ TODO.md
 examples/evaluate/eval-guidellm/data/c4_calibration/activation_rms
 
 examples/evaluate/eval-guidellm/data/c4_calibration/offline*
+
+# Local one-off residual-complement tuning and analysis helpers
+/examples/evaluate/eval-guidellm/scripts/analyze_gateup_m512_d1_4.py
+/examples/evaluate/eval-guidellm/scripts/analyze_qwen14_o_current_complement_ncu.py
+/examples/evaluate/eval-guidellm/scripts/bench_complement_cta_granularity.py
+/examples/evaluate/eval-guidellm/scripts/bench_gateup_fused_partition_target.py
+/examples/evaluate/eval-guidellm/scripts/bench_gateup_splitk2_components.py
+/examples/evaluate/eval-guidellm/scripts/bench_low_smem_complement.py
+/examples/evaluate/eval-guidellm/scripts/bench_qwen14_o_splitk2_target.py
+/examples/evaluate/eval-guidellm/scripts/bench_separate_component_bottleneck.py
+/examples/evaluate/eval-guidellm/scripts/profile_dynamic_dense_fraction_nsys.py
+/examples/evaluate/eval-guidellm/scripts/profile_low_smem_overlap_nsys.py
+/examples/evaluate/eval-guidellm/scripts/update_three_way_results.py
+
+# Local score-mode selection experiments (not part of the vLLM integration)
+/examples/evaluate/eval-guidellm/scripts/run_llama_gsm8k_score_mode_comparison.py
+/examples/evaluate/eval-guidellm/scripts/run_llama_humaneval_score_mode_comparison.py
+/examples/evaluate/eval-guidellm/scripts/run_llama_multidataset_score_mode_comparison.py

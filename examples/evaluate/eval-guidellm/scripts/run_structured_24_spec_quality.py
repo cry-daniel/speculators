@@ -359,6 +359,16 @@ def build_vllm_command(
     ]
     if getattr(args, "enforce_eager", False):
         command.append("--enforce-eager")
+    enable_prefix_caching = getattr(args, "enable_prefix_caching", None)
+    if enable_prefix_caching is True:
+        command.append("--enable-prefix-caching")
+    elif enable_prefix_caching is False:
+        command.append("--no-enable-prefix-caching")
+    compilation_config = getattr(args, "compilation_config", None)
+    if compilation_config is not None:
+        command.extend(
+            ["--compilation-config", json.dumps(compilation_config, separators=(",", ":"))]
+        )
     return command
 
 

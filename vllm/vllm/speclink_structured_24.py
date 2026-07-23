@@ -395,6 +395,21 @@ def apply_structured_24_from_env(
     mask_cache_raw = os.environ.get("SPECLINK_STRUCTURED_24_MASK_CACHE", "").strip()
     cache_strict = _env_flag("SPECLINK_STRUCTURED_24_CACHE_STRICT", "1")
     token_dense = _env_flag("SPECLINK_TOKEN_DENSE_ENABLE", "0")
+    token_dense_backend = os.environ.get(
+        "SPECLINK_TOKEN_DENSE_BACKEND", "legacy_dense_first"
+    ).strip()
+    if token_dense_backend not in {
+        "legacy_dense_first",
+        "residual_complement_splitk2",
+    }:
+        raise RuntimeError(
+            "SPECLINK_TOKEN_DENSE_BACKEND must be legacy_dense_first or "
+            "residual_complement_splitk2"
+        )
+    if token_dense_backend == "residual_complement_splitk2" and not token_dense:
+        raise RuntimeError(
+            "residual_complement_splitk2 requires SPECLINK_TOKEN_DENSE_ENABLE=1"
+        )
 
     if not model_label:
         raise RuntimeError("SPECLINK_STRUCTURED_24_MODEL_LABEL is required")
@@ -412,6 +427,13 @@ def apply_structured_24_from_env(
 
     modules = _iter_target_modules(model)
     layers = _selected_layers(modules)
+    # Do not keep a second Python reference to every dense Parameter while
+    # converting modules one by one.  residual-complement replaces
+    # ``module.weight`` with its one-weight runtime; retaining the original
+    # tensors in this list would keep the entire dense checkpoint alive and
+    # double peak GPU memory until this function returns.
+    module_entries = [(name, module) for name, module, _weight in modules]
+    del modules
     activation_scales = _load_activation_scales(Path(cache_root_raw), model_label)
     mask_cache = _load_mask_cache(mask_cache_raw) if mask_cache_raw else None
     single_layer = int(layer_index_raw) if layer_index_raw else None
@@ -431,8 +453,9 @@ def apply_structured_24_from_env(
             (mask_cache.get("metadata", {}) or {}).get("method", "") if mask_cache else ""
         ),
         "token_dense_enabled": token_dense,
+        "token_dense_backend": token_dense_backend,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "module_count_seen": len(modules),
+        "module_count_seen": len(module_entries),
         "layers_seen": layers,
         "total_masked_weight_count": 0,
         "zeroed_weight_count": 0,
@@ -445,9 +468,14 @@ def apply_structured_24_from_env(
         "missing_activation_scale_modules": [],
         "missing_cached_mask_modules": [],
         "per_module": [],
+        "residual_complement_persistent_bytes": 0,
+        "released_dense_weight_bytes": 0,
     }
 
-    for name, _module, weight in modules:
+    for name, _module in module_entries:
+        weight = getattr(_module, "weight", None)
+        if not isinstance(weight, torch.Tensor):
+            raise RuntimeError(f"target linear {name} lost its weight before conversion")
         layer = _layer_index(name)
         leaf = _module_leaf(name)
         out_features = int(weight.shape[0])
@@ -531,6 +559,22 @@ def apply_structured_24_from_env(
                 )
             else:
                 masked_total, zeroed, method = _mask_weight_24(weight, activation_scale)
+        residual_runtime: dict[str, Any] | None = None
+        if token_dense_backend == "residual_complement_splitk2":
+            from vllm.speclink_token_dense import prepare_residual_complement_module
+
+            residual_runtime = prepare_residual_complement_module(_module)
+            stats["residual_complement_persistent_bytes"] += int(
+                residual_runtime["persistent_bytes"]
+            )
+            stats["released_dense_weight_bytes"] += int(
+                residual_runtime["released_dense_bytes"]
+            )
+            # Each large temporary sparse reconstruction is setup-only.  Give
+            # the next module the released allocator blocks immediately.
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
         stats["total_masked_weight_count"] += masked_total
         stats["zeroed_weight_count"] += zeroed
         stats["masked_module_names"].append(name)
@@ -545,6 +589,7 @@ def apply_structured_24_from_env(
                 "actual_sparsity": zeroed / masked_total if masked_total else 0.0,
                 "kept_dense": False,
                 "mask_method": method,
+                "residual_complement_runtime": residual_runtime,
             }
         )
 

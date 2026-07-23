@@ -29,6 +29,8 @@ def _extension() -> Any:
         required=(
             csrc / "cutlass_dual_sparse_gemm_with_visitor.h",
             csrc / "cutlass_dual_sparse_mma_multistage.h",
+            csrc / "cutlass_sparse_mma_activation_stationary.h",
+            csrc / "cutlass_sparse_mma_single_smem.h",
             csrc / "cutlass_transpose_epilogue_visitor.h",
         ),
         build_dir=build_dir,

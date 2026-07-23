@@ -369,7 +369,14 @@ def run_worker(args: argparse.Namespace, case: common.ShapeCase) -> dict[str, An
     full_algorithm = select_cusparselt_algorithm(runtime.cusparselt, x)
     current_resources = create_multistream_resources(device)
     current_call = lambda: launch_separate(
-        x, route.dense_indices, runtime, current_resources
+        x,
+        route.dense_indices,
+        runtime,
+        current_resources,
+        complement_variant="wave_aware",
+        complement_first=True,
+        optimized_gather=True,
+        optimized_merge=True,
     )
     current_captured = capture_multistream_graph(
         current_call,

@@ -59,7 +59,10 @@ from vllm.model_executor.model_loader.weight_utils import (
     maybe_remap_kv_scale_name,
 )
 from vllm.sequence import IntermediateTensors
-from vllm.speclink_token_dense import mixed_sparse_linear_output
+from vllm.speclink_token_dense import (
+    mixed_sparse_linear_output,
+    residual_complement_linear,
+)
 from vllm.transformers_utils.config import is_interleaved, set_default_rope_theta
 from vllm.v1.attention.backend import AttentionType
 
@@ -112,11 +115,16 @@ class Qwen2MLP(nn.Module):
         self.act_fn = SiluAndMul()
 
     def forward(self, x):
-        gate_up, _ = self.gate_up_proj(x)
-        gate_up = mixed_sparse_linear_output(self.gate_up_proj, x, gate_up)
+        gate_up = residual_complement_linear(self.gate_up_proj, x)
+        if gate_up is None:
+            gate_up, _ = self.gate_up_proj(x)
+            gate_up = mixed_sparse_linear_output(self.gate_up_proj, x, gate_up)
         x = self.act_fn(gate_up)
-        down, _ = self.down_proj(x)
-        return mixed_sparse_linear_output(self.down_proj, x, down)
+        down = residual_complement_linear(self.down_proj, x)
+        if down is None:
+            down, _ = self.down_proj(x)
+            down = mixed_sparse_linear_output(self.down_proj, x, down)
+        return down
 
 
 class Qwen2Attention(nn.Module):

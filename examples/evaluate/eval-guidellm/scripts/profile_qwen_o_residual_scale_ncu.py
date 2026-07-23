@@ -22,10 +22,12 @@ from sparse24_benchmark_common import (
     route_key,
 )
 from speculators.speclink import (
+    COMPLEMENT_CTA_VARIANTS,
     SPARSE_RESIDUAL_SMEM,
     TP1_FUSED_WEIGHT_SHAPES,
     cusparselt_sparse_residual_kernel_attributes,
     cusparselt_sparse_residual_residual_linear,
+    cusparselt_sparse_residual_residual_linear_splitk2,
     cusparselt_sparse_residual_sparse_linear,
     prepare_cusparselt_sparse_residual_weight,
     prepare_online_sparse24_weight,
@@ -44,7 +46,13 @@ WARMUP_REPLAYS = 100
 CUBLAS_FULL = "cublas_full"
 CUSPARSELT_BASE_FULL = "cusparselt_base_full"
 COMPLEMENT_DENSE_FRACTION = "complement_dense_fraction"
-METHODS = (CUBLAS_FULL, CUSPARSELT_BASE_FULL, COMPLEMENT_DENSE_FRACTION)
+COMPLEMENT_SPLITK2 = "complement_splitk2"
+METHODS = (
+    CUBLAS_FULL,
+    CUSPARSELT_BASE_FULL,
+    COMPLEMENT_DENSE_FRACTION,
+    COMPLEMENT_SPLITK2,
+)
 
 
 def check(
@@ -75,12 +83,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     n, k = TP1_FUSED_WEIGHT_SHAPES[args.model]["o"]
     case = ShapeCase(args.model, "o", args.m, k, n)
+    dense_fraction = Fraction(args.dense_fraction)
     route = route_from_record(
-        generate_routes([args.m], [DENSE_FRACTION], args.seed)["routes"]
-        [route_key(args.m, DENSE_FRACTION)],
+        generate_routes([args.m], [dense_fraction], args.seed)["routes"]
+        [route_key(args.m, dense_fraction)],
         device,
     )
-    dense_rows = args.m // 8
+    dense_rows = args.m * dense_fraction.numerator // dense_fraction.denominator
     if route.dense_count != dense_rows:
         raise RuntimeError("route dense count changed")
 
@@ -111,20 +120,34 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         runtime = prepare_cusparselt_sparse_residual_weight(
             canonical, sparse_weight=weight24
         )
-        call = lambda: cusparselt_sparse_residual_residual_linear(
-            x_dense, runtime
+        call = (
+            lambda: cusparselt_sparse_residual_residual_linear_splitk2(
+                x_dense, runtime
+            )
+            if args.profile_method == COMPLEMENT_SPLITK2
+            else lambda: cusparselt_sparse_residual_residual_linear(
+                x_dense, runtime, variant=args.complement_variant
+            )
         )
         correction = call()
+        correction_sum = (
+            correction.float().sum(0).to(torch.bfloat16)
+            if args.profile_method == COMPLEMENT_SPLITK2
+            else correction
+        )
         base_dense = cusparselt_sparse_residual_sparse_linear(x_dense, runtime)
         correctness = {
             "base_plus_complement_reference": check(
-                base_dense + correction,
+                base_dense + correction_sum,
                 F.linear(x_dense, weight),
                 context="base plus complement",
             )
         }
         attributes = cusparselt_sparse_residual_kernel_attributes(
-            dense_rows, n, residual_only=True
+            dense_rows,
+            n,
+            residual_only=True,
+            variant=args.complement_variant,
         )
 
     graph = capture_graph(call, warmup=args.capture_warmup, unroll=1)
@@ -151,18 +174,30 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "M_original": args.m,
         "M_executed": (
             dense_rows
-            if args.profile_method == COMPLEMENT_DENSE_FRACTION
+            if args.profile_method in (
+                COMPLEMENT_DENSE_FRACTION,
+                COMPLEMENT_SPLITK2,
+            )
             else args.m
         ),
         "N": n,
         "K": k,
         "dense_rows": dense_rows,
+        "dense_fraction": str(dense_fraction),
         "sparse_rows": args.m - dense_rows,
         "weight_elements": n * k,
         "graph_unroll": 1,
         "warmup_replays": WARMUP_REPLAYS,
         "ncu_expected_cache_control": "all",
         "cusparselt_algorithm_id": algorithm_id,
+        "complement_variant": (
+            args.complement_variant
+            if args.profile_method in (
+                COMPLEMENT_DENSE_FRACTION,
+                COMPLEMENT_SPLITK2,
+            )
+            else None
+        ),
         "correctness": correctness,
     }
     if attributes is not None:
@@ -176,7 +211,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--profile-only", action="store_true")
     parser.add_argument("--model", choices=MODELS, required=True)
     parser.add_argument("--m", choices=M_VALUES, type=int, required=True)
+    parser.add_argument("--dense-fraction", choices=("1/8", "1/4"), default="1/8")
     parser.add_argument("--profile-method", choices=METHODS, required=True)
+    parser.add_argument(
+        "--complement-variant",
+        choices=tuple(COMPLEMENT_CTA_VARIANTS),
+        default="auto",
+    )
     parser.add_argument("--device-index", type=int, default=0)
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--capture-warmup", type=int, default=3)

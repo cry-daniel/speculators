@@ -46,7 +46,10 @@ from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.vocab_parallel_embedding import ParallelLMHead
 from vllm.sequence import IntermediateTensors
 from vllm.speclink_breakdown import verify_detail_enabled, verify_timer
-from vllm.speclink_token_dense import mixed_sparse_linear_output
+from vllm.speclink_token_dense import (
+    mixed_sparse_linear_output,
+    residual_complement_linear,
+)
 from vllm.transformers_utils.config import set_default_rope_theta
 from vllm.v1.attention.backend import AttentionType
 
@@ -153,11 +156,19 @@ class Qwen3Attention(nn.Module):
     ) -> torch.Tensor:
         if _SPECLINK_VERIFY_DETAIL:
             with verify_timer("qkv_proj"):
-                qkv, _ = self.qkv_proj(hidden_states)
-                qkv = mixed_sparse_linear_output(self.qkv_proj, hidden_states, qkv)
+                qkv = residual_complement_linear(self.qkv_proj, hidden_states)
+                if qkv is None:
+                    qkv, _ = self.qkv_proj(hidden_states)
+                    qkv = mixed_sparse_linear_output(
+                        self.qkv_proj, hidden_states, qkv
+                    )
         else:
-            qkv, _ = self.qkv_proj(hidden_states)
-            qkv = mixed_sparse_linear_output(self.qkv_proj, hidden_states, qkv)
+            qkv = residual_complement_linear(self.qkv_proj, hidden_states)
+            if qkv is None:
+                qkv, _ = self.qkv_proj(hidden_states)
+                qkv = mixed_sparse_linear_output(
+                    self.qkv_proj, hidden_states, qkv
+                )
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         if _SPECLINK_VERIFY_DETAIL:
             with verify_timer("attention"):
@@ -174,8 +185,12 @@ class Qwen3Attention(nn.Module):
                 k = k_by_head.view(k.shape)
                 q, k = self.rotary_emb(positions, q, k)
                 attn_output = self.attn(q, k, v)
-                output, _ = self.o_proj(attn_output)
-                output = mixed_sparse_linear_output(self.o_proj, attn_output, output)
+                output = residual_complement_linear(self.o_proj, attn_output)
+                if output is None:
+                    output, _ = self.o_proj(attn_output)
+                    output = mixed_sparse_linear_output(
+                        self.o_proj, attn_output, output
+                    )
         else:
             # Add qk-norm
             q_by_head = q.view(
@@ -190,8 +205,12 @@ class Qwen3Attention(nn.Module):
             k = k_by_head.view(k.shape)
             q, k = self.rotary_emb(positions, q, k)
             attn_output = self.attn(q, k, v)
-            output, _ = self.o_proj(attn_output)
-            output = mixed_sparse_linear_output(self.o_proj, attn_output, output)
+            output = residual_complement_linear(self.o_proj, attn_output)
+            if output is None:
+                output, _ = self.o_proj(attn_output)
+                output = mixed_sparse_linear_output(
+                    self.o_proj, attn_output, output
+                )
         return output
 
 
