@@ -1,0 +1,27 @@
+{
+  "commit": "cb7e0841fe0c206c6ed74a197ad5e2a1f13f5a2b",
+  "datasets": {
+    "alpaca": {
+      "path": "data/eagle_generated_ppl/alpaca/question.jsonl",
+      "rows": 80,
+      "sha256": "8ad3e5a7fc61b88d8e25edb81a52a2ce00a04494d5694c122cb11a5cc26a00df",
+      "source": "https://github.com/SafeAILab/EAGLE/blob/cb7e0841fe0c206c6ed74a197ad5e2a1f13f5a2b/eagle/data/alpaca/question.jsonl",
+      "turns": 80
+    },
+    "mt_bench": {
+      "path": "data/eagle_generated_ppl/mt_bench/question.jsonl",
+      "rows": 80,
+      "sha256": "119565adbab82227089cefdb44c8d7e2cf04dc0a0ec233634c82e7d4e2a944f7",
+      "source": "https://github.com/SafeAILab/EAGLE/blob/cb7e0841fe0c206c6ed74a197ad5e2a1f13f5a2b/eagle/data/mt_bench/question.jsonl",
+      "turns": 160
+    },
+    "sum": {
+      "path": "data/eagle_generated_ppl/sum/question.jsonl",
+      "rows": 80,
+      "sha256": "916876f0c42f938a944de96eed16e51425f29f27438cca5c9ef4737c0fedf771",
+      "source": "https://github.com/SafeAILab/EAGLE/blob/cb7e0841fe0c206c6ed74a197ad5e2a1f13f5a2b/eagle/data/sum/question.jsonl",
+      "turns": 80
+    }
+  },
+  "repository": "https://github.com/SafeAILab/EAGLE"
+}
