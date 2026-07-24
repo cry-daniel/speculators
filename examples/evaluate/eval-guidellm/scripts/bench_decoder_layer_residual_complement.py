@@ -63,6 +63,11 @@ SCOPES = ("global", "per_request")
 EIGHTHS = tuple(range(1, 9))
 CATEGORIES = ("GEMM", "Attention", "Softmax", "Gather", "Scatter", "Reduce", "Others")
 SEED = 20260721
+MODEL_ALWAYS_DENSE_PROJECTIONS = {
+    # Accuracy-guided Llama-only layer/vLLM policy.  Keep kernel benchmarks
+    # unchanged: this table is consumed only by this full-layer benchmark.
+    "llama3_1_8b": frozenset({"gate_up", "o"}),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +107,7 @@ class Projection:
 
 @dataclass(slots=True)
 class LayerState:
+    model: str
     spec: ModelSpec
     projections: dict[str, Projection]
     input_norm: torch.Tensor
@@ -295,6 +301,7 @@ def prepare_layer(model: str, max_batch: int, device: torch.device, seed: int) -
     query_positions = torch.arange(past, past + 8, device=device)
     causal_mask = key_positions[None, :] > query_positions[:, None]
     return LayerState(
+        model=model,
         spec=spec,
         projections=projections,
         input_norm=norm(spec.hidden),
@@ -410,6 +417,10 @@ def layer_forward(
                     x.contiguous(), projection.runtime
                 ),
             )
+        if name in MODEL_ALWAYS_DENSE_PROJECTIONS.get(
+            state.model, frozenset()
+        ):
+            return phase("GEMM", lambda: F.linear(x, projection.dense))
         assert dense_indices is not None
         if timer is not None:
             return diagnostic_linear(projection, x, dense_indices, timer)
@@ -647,18 +658,31 @@ def run_worker(args: argparse.Namespace) -> None:
 
         for scope in args.scopes:
             for eighths in args.eighths:
+                always_dense = MODEL_ALWAYS_DENSE_PROJECTIONS.get(
+                    model, frozenset()
+                )
                 indices = dense_indices_from_confidence(confidence, eighths, scope)
                 route_mask = torch.ones(
                     batch * 8, dtype=torch.bool, device=device
                 )
                 route_mask[indices] = False
                 sparse_indices = torch.nonzero(route_mask, as_tuple=False).flatten().contiguous()
-                uses_fused_gate_up = batch == 64 and int(indices.numel()) == 128
-                method_variant = (
-                    "mixed_fused_gate_up"
-                    if uses_fused_gate_up
-                    else "separate_splitk2"
+                uses_fused_gate_up = (
+                    "gate_up" not in always_dense
+                    and batch == 64
+                    and int(indices.numel()) == 128
                 )
+                if always_dense:
+                    dense_label = "_".join(sorted(always_dense))
+                    method_variant = (
+                        f"dense_{dense_label}_residual_complement_others"
+                    )
+                else:
+                    method_variant = (
+                        "mixed_fused_gate_up"
+                        if uses_fused_gate_up
+                        else "separate_splitk2"
+                    )
                 method_eager = lambda indices=indices, sparse_indices=sparse_indices: layer_forward(
                     hidden,
                     state,
@@ -732,6 +756,9 @@ def run_worker(args: argparse.Namespace) -> None:
                         "dense_fraction": fraction,
                         "dense_rows": int(indices.numel()),
                         "sparse_rows": batch * 8 - int(indices.numel()),
+                        "always_dense_projections": ",".join(
+                            sorted(always_dense)
+                        ),
                         "dense_cublas_median_us": dense_summary["median_us"],
                         "dense_cublas_p10_us": dense_summary["p10_us"],
                         "dense_cublas_p90_us": dense_summary["p90_us"],
@@ -764,6 +791,9 @@ def run_worker(args: argparse.Namespace) -> None:
                             "routing_scope": scope,
                             "dense_fraction": fraction,
                             "method": "residual_complement_diagnostic_serial",
+                            "always_dense_projections": ",".join(
+                                sorted(always_dense)
+                            ),
                             "category": category,
                             **summary,
                         }
@@ -777,6 +807,9 @@ def run_worker(args: argparse.Namespace) -> None:
                             "routing_scope": scope,
                             "dense_fraction": fraction,
                             "method": f"residual_complement_{method_variant}",
+                            "always_dense_projections": ",".join(
+                                sorted(always_dense)
+                            ),
                             "trial": trial,
                             "iterations": iterations,
                             "latency_us": value,
@@ -1026,6 +1059,12 @@ def run_coordinator(args: argparse.Namespace) -> None:
             )
             for scope in args.scopes
         },
+        "always_dense_projections_by_model": {
+            model: sorted(
+                MODEL_ALWAYS_DENSE_PROJECTIONS.get(model, frozenset())
+            )
+            for model in args.models
+        },
     }
     (output / "analysis.json").write_text(json.dumps(analysis, indent=2) + "\n", encoding="utf-8")
     report = [
@@ -1038,7 +1077,7 @@ def run_coordinator(args: argparse.Namespace) -> None:
         f"{analysis['hybrid_geomean_speedup_vs_pure_24']:.4f}x.",
         "- Every request contributes one current token plus seven draft tokens; M=8B.",
         "- Current token is always dense. Quota d/8 adds d-1 selected draft rows per request on average.",
-        "- E2E uses concurrent cuSPARSELt base plus Split-K2 complement.",
+        "- E2E uses concurrent cuSPARSELt base plus Split-K2 complement. For Llama3-8B only, gate_up and o are full-dense cuBLAS projections while qkv and down retain residual-complement routing.",
         "- Breakdown uses explicit QK / softmax / AV and a serialized sparse diagnostic, so its categories are additive but are not the optimized E2E critical path.",
         "",
         "| Routing | Geomean speedup |",

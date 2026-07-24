@@ -492,9 +492,9 @@ def fraction_eighths() -> int | None:
     if not raw:
         return None
     value = int(raw)
-    if value < 1 or value > 8:
+    if value < 0 or value > 8:
         raise RuntimeError(
-            "SPECLINK_TOKEN_DENSE_FRACTION_EIGHTHS must be an integer in [1,8]"
+            "SPECLINK_TOKEN_DENSE_FRACTION_EIGHTHS must be an integer in [0,8]"
         )
     return value
 
@@ -877,10 +877,10 @@ def build_verify_dense_mask(
     """Build one quota-controlled route for the target verification pass.
 
     The first sampled token per request is the already-known next token and the
-    following scheduled rows are draft tokens.  The current token and any
-    non-draft/padding rows are always dense.  With seven draft tokens per
-    request, quota ``d/8`` selects exactly ``d-1`` draft rows plus the current
-    token, preserving a total verifier M of ``8 * request_count``.
+    following scheduled rows are draft tokens.  D0 is the pure-2:4 verifier
+    endpoint: every scheduled verifier row uses only the sparse base.  D1--D8
+    keep the current token dense and select exactly ``d-1`` of seven draft rows
+    per request, preserving a total verifier M of ``8 * request_count``.
     """
     if not enabled() or total_num_scheduled_tokens <= 0:
         return None
@@ -891,11 +891,14 @@ def build_verify_dense_mask(
             "high_confidence_dense"
         )
 
-    dense_mask = torch.ones(
-        total_num_scheduled_tokens, dtype=torch.bool, device=device
-    )
     cutoff = threshold()
     quota = fraction_eighths()
+    dense_mask = torch.full(
+        (total_num_scheduled_tokens,),
+        quota != 0,
+        dtype=torch.bool,
+        device=device,
+    )
     scores_required = quota is None or quota > 1
     scope = routing_scope()
     missing_score_tokens = 0
@@ -1301,6 +1304,13 @@ def residual_complement_linear(
             )
         else:
             _, dense_indices, sparse_indices = route
+
+    if dense_indices.numel() == 0:
+        # D0 is a real base-only endpoint.  Some decode calls execute outside
+        # the compiled/captured graph (for example graph-bucket transitions),
+        # so mirror the opaque op's zero-dense fast path here rather than
+        # invoking an indexed complement kernel with an empty index set.
+        return cusparselt_sparse_residual_sparse_linear(x, runtime)
 
     if _fused_gateup_variant_id(
         x, dense_indices, module._speclink_residual_packed

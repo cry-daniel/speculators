@@ -54,6 +54,11 @@ SPECULATOR_PATHS = {
 CALIBRATION_ROOT = (
     EVAL_ROOT / "data/c4_calibration/activation_rms/c4_512_seed42_bf16_max512"
 ).resolve()
+MODEL_ALWAYS_DENSE_LEAFS = {
+    # Accuracy-guided Llama-only serving policy.  Kernel benchmarks do not read
+    # this table and retain their existing gate_up/o implementations.
+    "llama3_1_8b": ("gate_up_proj", "o_proj"),
+}
 
 
 def parse_csv(value: str, allowed: Sequence[str], name: str) -> tuple[str, ...]:
@@ -75,16 +80,23 @@ def parse_int_csv(value: str, allowed: Sequence[int], name: str) -> tuple[int, .
 def configure_worker(args: argparse.Namespace) -> None:
     os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    os.environ.pop("SPECLINK_STRUCTURED_24_DENSE_LEAFS", None)
+    os.environ.pop("SPECLINK_STRUCTURED_24_STATS_PATH", None)
     if args.worker_backend == "dense":
         os.environ["SPECLINK_STRUCTURED_24_ENABLE"] = "0"
         os.environ["SPECLINK_TOKEN_DENSE_ENABLE"] = "0"
         return
+    dense_leafs = MODEL_ALWAYS_DENSE_LEAFS.get(args.worker_model, ())
     os.environ.update(
         {
             "SPECLINK_STRUCTURED_24_ENABLE": "1",
             "SPECLINK_STRUCTURED_24_MODEL_LABEL": args.worker_model,
             "SPECLINK_STRUCTURED_24_CALIBRATION_CACHE_ROOT": str(CALIBRATION_ROOT),
             "SPECLINK_STRUCTURED_24_POLICY": "all_sparse",
+            "SPECLINK_STRUCTURED_24_DENSE_LEAFS": ",".join(dense_leafs),
+            "SPECLINK_STRUCTURED_24_STATS_PATH": str(
+                args.worker_output.with_suffix(".structured24.json").resolve()
+            ),
             "SPECLINK_TOKEN_DENSE_ENABLE": "1",
             "SPECLINK_TOKEN_DENSE_MODE": "high_confidence_dense",
             "SPECLINK_TOKEN_DENSE_BACKEND": "residual_complement_splitk2",
@@ -99,6 +111,45 @@ def configure_worker(args: argparse.Namespace) -> None:
             ),
         }
     )
+
+
+def load_structured_24_audit(args: argparse.Namespace) -> dict[str, Any]:
+    if args.worker_backend == "dense":
+        return {
+            "verified": True,
+            "backend": "native_dense",
+            "dense_leafs": [],
+            "stats_path": "",
+        }
+    path = args.worker_output.with_suffix(".structured24.json").resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"missing structured-2:4 audit: {path}")
+    stats = json.loads(path.read_text(encoding="utf-8"))
+    expected = set(MODEL_ALWAYS_DENSE_LEAFS.get(args.worker_model, ()))
+    configured = set(stats.get("dense_leafs") or [])
+    per_module = stats.get("per_module") or []
+    kept = [item for item in per_module if item.get("kept_dense")]
+    masked = [item for item in per_module if not item.get("kept_dense")]
+    actual_dense = {str(item.get("leaf")) for item in kept}
+    if configured != expected or actual_dense != expected:
+        raise RuntimeError(
+            f"{args.worker_model} dense-leaf audit mismatch: "
+            f"expected={sorted(expected)} configured={sorted(configured)} "
+            f"actual={sorted(actual_dense)}"
+        )
+    if any(item.get("dense_keep_reason") != "dense_leaf" for item in kept):
+        raise RuntimeError("unexpected non-leaf dense keep in structured-2:4 audit")
+    if not masked:
+        raise RuntimeError("structured-2:4 audit has no masked modules")
+    return {
+        "verified": True,
+        "backend": "residual_complement",
+        "dense_leafs": sorted(expected),
+        "dense_module_count": len(kept),
+        "masked_module_count": len(masked),
+        "effective_sparse_fraction": stats.get("effective_sparse_fraction"),
+        "stats_path": str(path),
+    }
 
 
 def output_decode_interval(outputs: list[Any], elapsed: float) -> tuple[float, int]:
@@ -237,6 +288,7 @@ def run_worker(args: argparse.Namespace) -> None:
             "max_model_len": args.max_model_len,
         },
     )
+    structured_24_audit = load_structured_24_audit(args)
     params = SamplingParams(
         temperature=0.0,
         max_tokens=args.output_tokens,
@@ -322,6 +374,9 @@ def run_worker(args: argparse.Namespace) -> None:
                     "draft_tokens_per_request": 7,
                     "routing_scope": scope,
                     "dense_fraction": f"{eighths}/8",
+                    "always_dense_leafs": ",".join(
+                        structured_24_audit["dense_leafs"]
+                    ),
                     "trial": trial,
                     **metrics,
                 }
@@ -362,6 +417,9 @@ def run_worker(args: argparse.Namespace) -> None:
                     "draft_tokens_per_request": 7,
                     "routing_scope": scope,
                     "dense_fraction": f"{eighths}/8",
+                    "always_dense_leafs": ",".join(
+                        structured_24_audit["dense_leafs"]
+                    ),
                     "decode_tokens_per_sec_median": statistics.median(decode_rates),
                     "decode_tokens_per_sec_p10": common.percentile(decode_rates, 0.1),
                     "decode_tokens_per_sec_p90": common.percentile(decode_rates, 0.9),
@@ -389,7 +447,15 @@ def run_worker(args: argparse.Namespace) -> None:
             )
     args.worker_output.parent.mkdir(parents=True, exist_ok=True)
     args.worker_output.write_text(
-        json.dumps({"rows": rows, "raw": raw}, indent=2) + "\n",
+        json.dumps(
+            {
+                "rows": rows,
+                "raw": raw,
+                "structured_24_audit": structured_24_audit,
+            },
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     # LLM has no public shutdown method in this vendored 0.20 API; the worker
@@ -457,10 +523,12 @@ def run_coordinator(args: argparse.Namespace) -> None:
             worker_files.append(worker)
     rows = []
     raw = []
+    structured_24_audits = []
     for worker in worker_files:
         payload = json.loads(worker.read_text(encoding="utf-8"))
         rows.extend(payload["rows"])
         raw.extend(payload["raw"])
+        structured_24_audits.append(payload["structured_24_audit"])
     dense = {
         (row["model"], int(row["batch_size"])): row
         for row in rows
@@ -563,6 +631,11 @@ def run_coordinator(args: argparse.Namespace) -> None:
         "wall_interval": "complete LLM.generate call including cache-tail prefill",
         "gpu_exclusivity": "idle check before every worker process",
         "worker_results": [str(path) for path in worker_files],
+        "always_dense_leafs_by_model": {
+            model: list(MODEL_ALWAYS_DENSE_LEAFS.get(model, ()))
+            for model in args.models
+        },
+        "structured_24_audits": structured_24_audits,
     }
     (output / "protocol.json").write_text(
         json.dumps(protocol, indent=2) + "\n", encoding="utf-8"
@@ -684,6 +757,11 @@ def run_coordinator(args: argparse.Namespace) -> None:
             "timestamp to the latest completion timestamp; wall throughput also "
             "includes the remaining block-aligned prefill. K=7, so each full "
             "verifier step contains 8 rows per active request."
+        ),
+        (
+            "For Llama3-8B only, gate_up_proj and o_proj are full dense; "
+            "qkv_proj and down_proj retain residual-complement routing. "
+            "Qwen and single-kernel benchmarks are unchanged."
         ),
         "",
         "| Model | B | Dense fraction | Dense decode tok/s | Hybrid decode tok/s | Decode speedup | Wall speedup | Dense accept length | Hybrid accept length |",

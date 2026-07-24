@@ -391,6 +391,13 @@ def apply_structured_24_from_env(
     policy = os.environ.get("SPECLINK_STRUCTURED_24_POLICY", "all_sparse").strip()
     layer_index_raw = os.environ.get("SPECLINK_STRUCTURED_24_LAYER_INDEX", "").strip()
     keep_n = int(os.environ.get("SPECLINK_STRUCTURED_24_KEEP_N", "0") or "0")
+    dense_leafs = {
+        item.strip()
+        for item in os.environ.get(
+            "SPECLINK_STRUCTURED_24_DENSE_LEAFS", ""
+        ).split(",")
+        if item.strip()
+    }
     stats_path_raw = os.environ.get("SPECLINK_STRUCTURED_24_STATS_PATH", "").strip()
     mask_cache_raw = os.environ.get("SPECLINK_STRUCTURED_24_MASK_CACHE", "").strip()
     cache_strict = _env_flag("SPECLINK_STRUCTURED_24_CACHE_STRICT", "1")
@@ -424,6 +431,12 @@ def apply_structured_24_from_env(
         "keep_first_last",
     }:
         raise RuntimeError(f"unsupported SPECLINK_STRUCTURED_24_POLICY={policy}")
+    unknown_dense_leafs = dense_leafs - TARGET_LEAFS
+    if unknown_dense_leafs:
+        raise RuntimeError(
+            "unsupported SPECLINK_STRUCTURED_24_DENSE_LEAFS="
+            + ",".join(sorted(unknown_dense_leafs))
+        )
 
     modules = _iter_target_modules(model)
     layers = _selected_layers(modules)
@@ -447,6 +460,7 @@ def apply_structured_24_from_env(
         "policy": policy,
         "layer_index": single_layer,
         "keep_n": keep_n,
+        "dense_leafs": sorted(dense_leafs),
         "calibration_cache_root": str(Path(cache_root_raw).resolve()),
         "mask_cache": str(Path(mask_cache_raw).resolve()) if mask_cache_raw else "",
         "mask_cache_method": (
@@ -494,6 +508,8 @@ def apply_structured_24_from_env(
                 layers=layers,
                 keep_n=keep_n,
             )
+        if leaf in dense_leafs:
+            should_mask = False
 
         if not should_mask:
             stats["dense_keep_weight_count"] += total
@@ -507,6 +523,9 @@ def apply_structured_24_from_env(
                     "masked_weight_count": 0,
                     "zeroed_weight_count": 0,
                     "kept_dense": True,
+                    "dense_keep_reason": (
+                        "dense_leaf" if leaf in dense_leafs else "policy"
+                    ),
                     "mask_method": "dense_keep",
                 }
             )
