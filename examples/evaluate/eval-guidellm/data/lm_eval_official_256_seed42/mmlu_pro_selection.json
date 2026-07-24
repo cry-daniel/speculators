@@ -1,0 +1,1794 @@
+[
+  {
+    "category": "biology",
+    "global_dataset_index": 2690,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 2,
+    "source_id": "mmlu_pro:2806"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 2719,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 31,
+    "source_id": "mmlu_pro:2836"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 2784,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 96,
+    "source_id": "mmlu_pro:2902"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 2851,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 163,
+    "source_id": "mmlu_pro:2969"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 2904,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 216,
+    "source_id": "mmlu_pro:3022"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 2948,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 260,
+    "source_id": "mmlu_pro:3066"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 2960,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 272,
+    "source_id": "mmlu_pro:3078"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 2963,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 275,
+    "source_id": "mmlu_pro:3081"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 2989,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 301,
+    "source_id": "mmlu_pro:3109"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 3047,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 359,
+    "source_id": "mmlu_pro:3167"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 3088,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 400,
+    "source_id": "mmlu_pro:3208"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 3225,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 537,
+    "source_id": "mmlu_pro:3346"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 3240,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 552,
+    "source_id": "mmlu_pro:3361"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 3247,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 559,
+    "source_id": "mmlu_pro:3368"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 3255,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 567,
+    "source_id": "mmlu_pro:3376"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 3274,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 586,
+    "source_id": "mmlu_pro:3395"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 3305,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 617,
+    "source_id": "mmlu_pro:3426"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 3344,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 656,
+    "source_id": "mmlu_pro:3465"
+  },
+  {
+    "category": "biology",
+    "global_dataset_index": 3358,
+    "leaf_task": "mmlu_pro_biology",
+    "sample_index": 670,
+    "source_id": "mmlu_pro:3479"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 42,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 42,
+    "source_id": "mmlu_pro:112"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 159,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 159,
+    "source_id": "mmlu_pro:230"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 170,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 170,
+    "source_id": "mmlu_pro:242"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 177,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 177,
+    "source_id": "mmlu_pro:249"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 251,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 251,
+    "source_id": "mmlu_pro:323"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 263,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 263,
+    "source_id": "mmlu_pro:335"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 282,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 282,
+    "source_id": "mmlu_pro:354"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 289,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 289,
+    "source_id": "mmlu_pro:361"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 403,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 403,
+    "source_id": "mmlu_pro:477"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 538,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 538,
+    "source_id": "mmlu_pro:613"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 553,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 553,
+    "source_id": "mmlu_pro:628"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 567,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 567,
+    "source_id": "mmlu_pro:643"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 597,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 597,
+    "source_id": "mmlu_pro:673"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 647,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 647,
+    "source_id": "mmlu_pro:724"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 679,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 679,
+    "source_id": "mmlu_pro:756"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 712,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 712,
+    "source_id": "mmlu_pro:789"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 715,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 715,
+    "source_id": "mmlu_pro:792"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 745,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 745,
+    "source_id": "mmlu_pro:822"
+  },
+  {
+    "category": "business",
+    "global_dataset_index": 786,
+    "leaf_task": "mmlu_pro_business",
+    "sample_index": 786,
+    "source_id": "mmlu_pro:863"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 3614,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 209,
+    "source_id": "mmlu_pro:3737"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 3627,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 222,
+    "source_id": "mmlu_pro:3750"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 3632,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 227,
+    "source_id": "mmlu_pro:3755"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 3720,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 315,
+    "source_id": "mmlu_pro:3843"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 3800,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 395,
+    "source_id": "mmlu_pro:3923"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 3943,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 538,
+    "source_id": "mmlu_pro:4068"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 3990,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 585,
+    "source_id": "mmlu_pro:4116"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 4003,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 598,
+    "source_id": "mmlu_pro:4129"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 4027,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 622,
+    "source_id": "mmlu_pro:4153"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 4115,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 710,
+    "source_id": "mmlu_pro:4242"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 4240,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 835,
+    "source_id": "mmlu_pro:4367"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 4252,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 847,
+    "source_id": "mmlu_pro:4379"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 4256,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 851,
+    "source_id": "mmlu_pro:4383"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 4443,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 1038,
+    "source_id": "mmlu_pro:4575"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 4465,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 1060,
+    "source_id": "mmlu_pro:4597"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 4480,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 1075,
+    "source_id": "mmlu_pro:4612"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 4508,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 1103,
+    "source_id": "mmlu_pro:4640"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 4529,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 1124,
+    "source_id": "mmlu_pro:4661"
+  },
+  {
+    "category": "chemistry",
+    "global_dataset_index": 4536,
+    "leaf_task": "mmlu_pro_chemistry",
+    "sample_index": 1131,
+    "source_id": "mmlu_pro:4668"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10163,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 9,
+    "source_id": "mmlu_pro:10365"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10218,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 64,
+    "source_id": "mmlu_pro:10423"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10244,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 90,
+    "source_id": "mmlu_pro:10449"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10248,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 94,
+    "source_id": "mmlu_pro:10453"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10251,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 97,
+    "source_id": "mmlu_pro:10456"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10255,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 101,
+    "source_id": "mmlu_pro:10460"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10265,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 111,
+    "source_id": "mmlu_pro:10470"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10368,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 214,
+    "source_id": "mmlu_pro:10574"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10375,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 221,
+    "source_id": "mmlu_pro:10581"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10386,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 232,
+    "source_id": "mmlu_pro:10592"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10405,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 251,
+    "source_id": "mmlu_pro:10613"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10413,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 259,
+    "source_id": "mmlu_pro:10621"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10416,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 262,
+    "source_id": "mmlu_pro:10624"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10445,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 291,
+    "source_id": "mmlu_pro:10653"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10459,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 305,
+    "source_id": "mmlu_pro:10668"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10479,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 325,
+    "source_id": "mmlu_pro:10688"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10494,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 340,
+    "source_id": "mmlu_pro:10704"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10535,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 381,
+    "source_id": "mmlu_pro:10745"
+  },
+  {
+    "category": "computer science",
+    "global_dataset_index": 10547,
+    "leaf_task": "mmlu_pro_computer_science",
+    "sample_index": 393,
+    "source_id": "mmlu_pro:10757"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 6778,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 118,
+    "source_id": "mmlu_pro:6945"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 6830,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 170,
+    "source_id": "mmlu_pro:6998"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 6886,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 226,
+    "source_id": "mmlu_pro:7055"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 6980,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 320,
+    "source_id": "mmlu_pro:7151"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 7004,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 344,
+    "source_id": "mmlu_pro:7175"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 7064,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 404,
+    "source_id": "mmlu_pro:7237"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 7087,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 427,
+    "source_id": "mmlu_pro:7261"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 7118,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 458,
+    "source_id": "mmlu_pro:7292"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 7129,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 469,
+    "source_id": "mmlu_pro:7303"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 7192,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 532,
+    "source_id": "mmlu_pro:7371"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 7270,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 610,
+    "source_id": "mmlu_pro:7450"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 7275,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 615,
+    "source_id": "mmlu_pro:7455"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 7303,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 643,
+    "source_id": "mmlu_pro:7485"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 7334,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 674,
+    "source_id": "mmlu_pro:7517"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 7335,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 675,
+    "source_id": "mmlu_pro:7518"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 7336,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 676,
+    "source_id": "mmlu_pro:7519"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 7356,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 696,
+    "source_id": "mmlu_pro:7539"
+  },
+  {
+    "category": "economics",
+    "global_dataset_index": 7397,
+    "leaf_task": "mmlu_pro_economics",
+    "sample_index": 737,
+    "source_id": "mmlu_pro:7580"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11287,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 224,
+    "source_id": "mmlu_pro:11511"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11317,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 254,
+    "source_id": "mmlu_pro:11541"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11408,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 345,
+    "source_id": "mmlu_pro:11632"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11445,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 382,
+    "source_id": "mmlu_pro:11669"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11471,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 408,
+    "source_id": "mmlu_pro:11695"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11481,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 418,
+    "source_id": "mmlu_pro:11705"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11500,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 437,
+    "source_id": "mmlu_pro:11724"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11675,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 612,
+    "source_id": "mmlu_pro:11900"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11687,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 624,
+    "source_id": "mmlu_pro:11912"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11741,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 678,
+    "source_id": "mmlu_pro:11966"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11762,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 699,
+    "source_id": "mmlu_pro:11987"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11804,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 741,
+    "source_id": "mmlu_pro:12029"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11830,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 767,
+    "source_id": "mmlu_pro:12055"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11854,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 791,
+    "source_id": "mmlu_pro:12079"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11973,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 910,
+    "source_id": "mmlu_pro:12198"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11982,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 919,
+    "source_id": "mmlu_pro:12207"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 11999,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 936,
+    "source_id": "mmlu_pro:12224"
+  },
+  {
+    "category": "engineering",
+    "global_dataset_index": 12022,
+    "leaf_task": "mmlu_pro_engineering",
+    "sample_index": 959,
+    "source_id": "mmlu_pro:12247"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 5856,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 14,
+    "source_id": "mmlu_pro:6015"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 5904,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 62,
+    "source_id": "mmlu_pro:6064"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 5911,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 69,
+    "source_id": "mmlu_pro:6071"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 5929,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 87,
+    "source_id": "mmlu_pro:6090"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 6017,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 175,
+    "source_id": "mmlu_pro:6178"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 6033,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 191,
+    "source_id": "mmlu_pro:6195"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 6131,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 289,
+    "source_id": "mmlu_pro:6294"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 6153,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 311,
+    "source_id": "mmlu_pro:6316"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 6207,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 365,
+    "source_id": "mmlu_pro:6371"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 6348,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 506,
+    "source_id": "mmlu_pro:6512"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 6354,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 512,
+    "source_id": "mmlu_pro:6518"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 6422,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 580,
+    "source_id": "mmlu_pro:6587"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 6430,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 588,
+    "source_id": "mmlu_pro:6595"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 6488,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 646,
+    "source_id": "mmlu_pro:6653"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 6516,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 674,
+    "source_id": "mmlu_pro:6681"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 6569,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 727,
+    "source_id": "mmlu_pro:6735"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 6649,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 807,
+    "source_id": "mmlu_pro:6815"
+  },
+  {
+    "category": "health",
+    "global_dataset_index": 6657,
+    "leaf_task": "mmlu_pro_health",
+    "sample_index": 815,
+    "source_id": "mmlu_pro:6823"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4537,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 0,
+    "source_id": "mmlu_pro:4669"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4538,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 1,
+    "source_id": "mmlu_pro:4670"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4562,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 25,
+    "source_id": "mmlu_pro:4694"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4567,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 30,
+    "source_id": "mmlu_pro:4699"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4619,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 82,
+    "source_id": "mmlu_pro:4751"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4698,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 161,
+    "source_id": "mmlu_pro:4837"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4716,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 179,
+    "source_id": "mmlu_pro:4855"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4720,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 183,
+    "source_id": "mmlu_pro:4859"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4757,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 220,
+    "source_id": "mmlu_pro:4896"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4787,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 250,
+    "source_id": "mmlu_pro:4926"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4799,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 262,
+    "source_id": "mmlu_pro:4938"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4805,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 268,
+    "source_id": "mmlu_pro:4944"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4863,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 326,
+    "source_id": "mmlu_pro:5002"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4866,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 329,
+    "source_id": "mmlu_pro:5005"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4875,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 338,
+    "source_id": "mmlu_pro:5015"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4892,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 355,
+    "source_id": "mmlu_pro:5032"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4893,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 356,
+    "source_id": "mmlu_pro:5033"
+  },
+  {
+    "category": "history",
+    "global_dataset_index": 4913,
+    "leaf_task": "mmlu_pro_history",
+    "sample_index": 376,
+    "source_id": "mmlu_pro:5054"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 966,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 177,
+    "source_id": "mmlu_pro:1046"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 981,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 192,
+    "source_id": "mmlu_pro:1061"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 985,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 196,
+    "source_id": "mmlu_pro:1065"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 1065,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 276,
+    "source_id": "mmlu_pro:1146"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 1114,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 325,
+    "source_id": "mmlu_pro:1197"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 1235,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 446,
+    "source_id": "mmlu_pro:1319"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 1246,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 457,
+    "source_id": "mmlu_pro:1330"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 1252,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 463,
+    "source_id": "mmlu_pro:1336"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 1271,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 482,
+    "source_id": "mmlu_pro:1356"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 1282,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 493,
+    "source_id": "mmlu_pro:1367"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 1410,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 621,
+    "source_id": "mmlu_pro:1501"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 1529,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 740,
+    "source_id": "mmlu_pro:1621"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 1603,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 814,
+    "source_id": "mmlu_pro:1696"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 1650,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 861,
+    "source_id": "mmlu_pro:1745"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 1736,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 947,
+    "source_id": "mmlu_pro:1831"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 1795,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 1006,
+    "source_id": "mmlu_pro:1891"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 1814,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 1025,
+    "source_id": "mmlu_pro:1910"
+  },
+  {
+    "category": "law",
+    "global_dataset_index": 1859,
+    "leaf_task": "mmlu_pro_law",
+    "sample_index": 1070,
+    "source_id": "mmlu_pro:1955"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 7567,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 63,
+    "source_id": "mmlu_pro:7750"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 7607,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 103,
+    "source_id": "mmlu_pro:7790"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 7654,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 150,
+    "source_id": "mmlu_pro:7837"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 7802,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 298,
+    "source_id": "mmlu_pro:7985"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 7844,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 340,
+    "source_id": "mmlu_pro:8027"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 7854,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 350,
+    "source_id": "mmlu_pro:8037"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 7889,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 385,
+    "source_id": "mmlu_pro:8073"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 7992,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 488,
+    "source_id": "mmlu_pro:8177"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 8105,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 601,
+    "source_id": "mmlu_pro:8291"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 8107,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 603,
+    "source_id": "mmlu_pro:8293"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 8140,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 636,
+    "source_id": "mmlu_pro:8326"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 8264,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 760,
+    "source_id": "mmlu_pro:8451"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 8299,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 795,
+    "source_id": "mmlu_pro:8486"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 8464,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 960,
+    "source_id": "mmlu_pro:8651"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 8472,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 968,
+    "source_id": "mmlu_pro:8659"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 8501,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 997,
+    "source_id": "mmlu_pro:8688"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 8758,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 1254,
+    "source_id": "mmlu_pro:8947"
+  },
+  {
+    "category": "math",
+    "global_dataset_index": 8787,
+    "leaf_task": "mmlu_pro_math",
+    "sample_index": 1283,
+    "source_id": "mmlu_pro:8976"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5049,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 131,
+    "source_id": "mmlu_pro:5191"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5111,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 193,
+    "source_id": "mmlu_pro:5253"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5123,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 205,
+    "source_id": "mmlu_pro:5265"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5158,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 240,
+    "source_id": "mmlu_pro:5300"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5196,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 278,
+    "source_id": "mmlu_pro:5338"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5225,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 307,
+    "source_id": "mmlu_pro:5367"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5299,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 381,
+    "source_id": "mmlu_pro:5443"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5377,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 459,
+    "source_id": "mmlu_pro:5524"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5403,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 485,
+    "source_id": "mmlu_pro:5550"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5426,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 508,
+    "source_id": "mmlu_pro:5575"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5549,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 631,
+    "source_id": "mmlu_pro:5703"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5557,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 639,
+    "source_id": "mmlu_pro:5711"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5576,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 658,
+    "source_id": "mmlu_pro:5731"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5671,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 753,
+    "source_id": "mmlu_pro:5828"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5731,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 813,
+    "source_id": "mmlu_pro:5889"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5735,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 817,
+    "source_id": "mmlu_pro:5893"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5766,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 848,
+    "source_id": "mmlu_pro:5924"
+  },
+  {
+    "category": "other",
+    "global_dataset_index": 5798,
+    "leaf_task": "mmlu_pro_other",
+    "sample_index": 880,
+    "source_id": "mmlu_pro:5957"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10588,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 24,
+    "source_id": "mmlu_pro:10799"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10607,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 43,
+    "source_id": "mmlu_pro:10819"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10638,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 74,
+    "source_id": "mmlu_pro:10851"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10649,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 85,
+    "source_id": "mmlu_pro:10862"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10654,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 90,
+    "source_id": "mmlu_pro:10867"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10672,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 108,
+    "source_id": "mmlu_pro:10885"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10693,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 129,
+    "source_id": "mmlu_pro:10906"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10782,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 218,
+    "source_id": "mmlu_pro:10998"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10791,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 227,
+    "source_id": "mmlu_pro:11007"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10796,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 232,
+    "source_id": "mmlu_pro:11012"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10817,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 253,
+    "source_id": "mmlu_pro:11034"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10854,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 290,
+    "source_id": "mmlu_pro:11071"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10862,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 298,
+    "source_id": "mmlu_pro:11079"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10863,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 299,
+    "source_id": "mmlu_pro:11080"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10872,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 308,
+    "source_id": "mmlu_pro:11089"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10889,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 325,
+    "source_id": "mmlu_pro:11107"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 10997,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 433,
+    "source_id": "mmlu_pro:11218"
+  },
+  {
+    "category": "philosophy",
+    "global_dataset_index": 11015,
+    "leaf_task": "mmlu_pro_philosophy",
+    "sample_index": 451,
+    "source_id": "mmlu_pro:11236"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 8946,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 91,
+    "source_id": "mmlu_pro:9135"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 8970,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 115,
+    "source_id": "mmlu_pro:9159"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 9066,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 211,
+    "source_id": "mmlu_pro:9255"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 9087,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 232,
+    "source_id": "mmlu_pro:9276"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 9105,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 250,
+    "source_id": "mmlu_pro:9294"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 9173,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 318,
+    "source_id": "mmlu_pro:9362"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 9297,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 442,
+    "source_id": "mmlu_pro:9486"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 9395,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 540,
+    "source_id": "mmlu_pro:9584"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 9439,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 584,
+    "source_id": "mmlu_pro:9628"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 9547,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 692,
+    "source_id": "mmlu_pro:9737"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 9613,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 758,
+    "source_id": "mmlu_pro:9803"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 9616,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 761,
+    "source_id": "mmlu_pro:9806"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 9626,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 771,
+    "source_id": "mmlu_pro:9817"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 9784,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 929,
+    "source_id": "mmlu_pro:9978"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 9865,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 1010,
+    "source_id": "mmlu_pro:10059"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 9897,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 1042,
+    "source_id": "mmlu_pro:10093"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 10060,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 1205,
+    "source_id": "mmlu_pro:10261"
+  },
+  {
+    "category": "physics",
+    "global_dataset_index": 10117,
+    "leaf_task": "mmlu_pro_physics",
+    "sample_index": 1262,
+    "source_id": "mmlu_pro:10319"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 1914,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 24,
+    "source_id": "mmlu_pro:2010"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 1969,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 79,
+    "source_id": "mmlu_pro:2068"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 1975,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 85,
+    "source_id": "mmlu_pro:2074"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 1993,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 103,
+    "source_id": "mmlu_pro:2092"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 2173,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 283,
+    "source_id": "mmlu_pro:2274"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 2276,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 386,
+    "source_id": "mmlu_pro:2377"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 2295,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 405,
+    "source_id": "mmlu_pro:2396"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 2315,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 425,
+    "source_id": "mmlu_pro:2417"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 2413,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 523,
+    "source_id": "mmlu_pro:2516"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 2435,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 545,
+    "source_id": "mmlu_pro:2538"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 2447,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 557,
+    "source_id": "mmlu_pro:2550"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 2469,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 579,
+    "source_id": "mmlu_pro:2572"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 2490,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 600,
+    "source_id": "mmlu_pro:2594"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 2554,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 664,
+    "source_id": "mmlu_pro:2662"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 2576,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 686,
+    "source_id": "mmlu_pro:2684"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 2592,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 702,
+    "source_id": "mmlu_pro:2702"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 2623,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 733,
+    "source_id": "mmlu_pro:2735"
+  },
+  {
+    "category": "psychology",
+    "global_dataset_index": 2681,
+    "leaf_task": "mmlu_pro_psychology",
+    "sample_index": 791,
+    "source_id": "mmlu_pro:2797"
+  }
+]

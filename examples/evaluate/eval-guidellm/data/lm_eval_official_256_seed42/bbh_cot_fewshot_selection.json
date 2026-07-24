@@ -1,0 +1,1538 @@
+[
+  {
+    "category": "boolean_expressions",
+    "leaf_task": "bbh_cot_fewshot_boolean_expressions",
+    "sample_index": 96,
+    "source_id": "bbh:boolean_expressions:96"
+  },
+  {
+    "category": "boolean_expressions",
+    "leaf_task": "bbh_cot_fewshot_boolean_expressions",
+    "sample_index": 99,
+    "source_id": "bbh:boolean_expressions:99"
+  },
+  {
+    "category": "boolean_expressions",
+    "leaf_task": "bbh_cot_fewshot_boolean_expressions",
+    "sample_index": 101,
+    "source_id": "bbh:boolean_expressions:101"
+  },
+  {
+    "category": "boolean_expressions",
+    "leaf_task": "bbh_cot_fewshot_boolean_expressions",
+    "sample_index": 147,
+    "source_id": "bbh:boolean_expressions:147"
+  },
+  {
+    "category": "boolean_expressions",
+    "leaf_task": "bbh_cot_fewshot_boolean_expressions",
+    "sample_index": 168,
+    "source_id": "bbh:boolean_expressions:168"
+  },
+  {
+    "category": "boolean_expressions",
+    "leaf_task": "bbh_cot_fewshot_boolean_expressions",
+    "sample_index": 185,
+    "source_id": "bbh:boolean_expressions:185"
+  },
+  {
+    "category": "boolean_expressions",
+    "leaf_task": "bbh_cot_fewshot_boolean_expressions",
+    "sample_index": 186,
+    "source_id": "bbh:boolean_expressions:186"
+  },
+  {
+    "category": "boolean_expressions",
+    "leaf_task": "bbh_cot_fewshot_boolean_expressions",
+    "sample_index": 187,
+    "source_id": "bbh:boolean_expressions:187"
+  },
+  {
+    "category": "boolean_expressions",
+    "leaf_task": "bbh_cot_fewshot_boolean_expressions",
+    "sample_index": 219,
+    "source_id": "bbh:boolean_expressions:219"
+  },
+  {
+    "category": "boolean_expressions",
+    "leaf_task": "bbh_cot_fewshot_boolean_expressions",
+    "sample_index": 228,
+    "source_id": "bbh:boolean_expressions:228"
+  },
+  {
+    "category": "causal_judgement",
+    "leaf_task": "bbh_cot_fewshot_causal_judgement",
+    "sample_index": 42,
+    "source_id": "bbh:causal_judgement:42"
+  },
+  {
+    "category": "causal_judgement",
+    "leaf_task": "bbh_cot_fewshot_causal_judgement",
+    "sample_index": 71,
+    "source_id": "bbh:causal_judgement:71"
+  },
+  {
+    "category": "causal_judgement",
+    "leaf_task": "bbh_cot_fewshot_causal_judgement",
+    "sample_index": 76,
+    "source_id": "bbh:causal_judgement:76"
+  },
+  {
+    "category": "causal_judgement",
+    "leaf_task": "bbh_cot_fewshot_causal_judgement",
+    "sample_index": 81,
+    "source_id": "bbh:causal_judgement:81"
+  },
+  {
+    "category": "causal_judgement",
+    "leaf_task": "bbh_cot_fewshot_causal_judgement",
+    "sample_index": 91,
+    "source_id": "bbh:causal_judgement:91"
+  },
+  {
+    "category": "causal_judgement",
+    "leaf_task": "bbh_cot_fewshot_causal_judgement",
+    "sample_index": 103,
+    "source_id": "bbh:causal_judgement:103"
+  },
+  {
+    "category": "causal_judgement",
+    "leaf_task": "bbh_cot_fewshot_causal_judgement",
+    "sample_index": 109,
+    "source_id": "bbh:causal_judgement:109"
+  },
+  {
+    "category": "causal_judgement",
+    "leaf_task": "bbh_cot_fewshot_causal_judgement",
+    "sample_index": 112,
+    "source_id": "bbh:causal_judgement:112"
+  },
+  {
+    "category": "causal_judgement",
+    "leaf_task": "bbh_cot_fewshot_causal_judgement",
+    "sample_index": 131,
+    "source_id": "bbh:causal_judgement:131"
+  },
+  {
+    "category": "causal_judgement",
+    "leaf_task": "bbh_cot_fewshot_causal_judgement",
+    "sample_index": 137,
+    "source_id": "bbh:causal_judgement:137"
+  },
+  {
+    "category": "date_understanding",
+    "leaf_task": "bbh_cot_fewshot_date_understanding",
+    "sample_index": 9,
+    "source_id": "bbh:date_understanding:9"
+  },
+  {
+    "category": "date_understanding",
+    "leaf_task": "bbh_cot_fewshot_date_understanding",
+    "sample_index": 34,
+    "source_id": "bbh:date_understanding:34"
+  },
+  {
+    "category": "date_understanding",
+    "leaf_task": "bbh_cot_fewshot_date_understanding",
+    "sample_index": 96,
+    "source_id": "bbh:date_understanding:96"
+  },
+  {
+    "category": "date_understanding",
+    "leaf_task": "bbh_cot_fewshot_date_understanding",
+    "sample_index": 111,
+    "source_id": "bbh:date_understanding:111"
+  },
+  {
+    "category": "date_understanding",
+    "leaf_task": "bbh_cot_fewshot_date_understanding",
+    "sample_index": 118,
+    "source_id": "bbh:date_understanding:118"
+  },
+  {
+    "category": "date_understanding",
+    "leaf_task": "bbh_cot_fewshot_date_understanding",
+    "sample_index": 132,
+    "source_id": "bbh:date_understanding:132"
+  },
+  {
+    "category": "date_understanding",
+    "leaf_task": "bbh_cot_fewshot_date_understanding",
+    "sample_index": 155,
+    "source_id": "bbh:date_understanding:155"
+  },
+  {
+    "category": "date_understanding",
+    "leaf_task": "bbh_cot_fewshot_date_understanding",
+    "sample_index": 159,
+    "source_id": "bbh:date_understanding:159"
+  },
+  {
+    "category": "date_understanding",
+    "leaf_task": "bbh_cot_fewshot_date_understanding",
+    "sample_index": 164,
+    "source_id": "bbh:date_understanding:164"
+  },
+  {
+    "category": "date_understanding",
+    "leaf_task": "bbh_cot_fewshot_date_understanding",
+    "sample_index": 228,
+    "source_id": "bbh:date_understanding:228"
+  },
+  {
+    "category": "disambiguation_qa",
+    "leaf_task": "bbh_cot_fewshot_disambiguation_qa",
+    "sample_index": 15,
+    "source_id": "bbh:disambiguation_qa:15"
+  },
+  {
+    "category": "disambiguation_qa",
+    "leaf_task": "bbh_cot_fewshot_disambiguation_qa",
+    "sample_index": 20,
+    "source_id": "bbh:disambiguation_qa:20"
+  },
+  {
+    "category": "disambiguation_qa",
+    "leaf_task": "bbh_cot_fewshot_disambiguation_qa",
+    "sample_index": 50,
+    "source_id": "bbh:disambiguation_qa:50"
+  },
+  {
+    "category": "disambiguation_qa",
+    "leaf_task": "bbh_cot_fewshot_disambiguation_qa",
+    "sample_index": 73,
+    "source_id": "bbh:disambiguation_qa:73"
+  },
+  {
+    "category": "disambiguation_qa",
+    "leaf_task": "bbh_cot_fewshot_disambiguation_qa",
+    "sample_index": 74,
+    "source_id": "bbh:disambiguation_qa:74"
+  },
+  {
+    "category": "disambiguation_qa",
+    "leaf_task": "bbh_cot_fewshot_disambiguation_qa",
+    "sample_index": 99,
+    "source_id": "bbh:disambiguation_qa:99"
+  },
+  {
+    "category": "disambiguation_qa",
+    "leaf_task": "bbh_cot_fewshot_disambiguation_qa",
+    "sample_index": 177,
+    "source_id": "bbh:disambiguation_qa:177"
+  },
+  {
+    "category": "disambiguation_qa",
+    "leaf_task": "bbh_cot_fewshot_disambiguation_qa",
+    "sample_index": 189,
+    "source_id": "bbh:disambiguation_qa:189"
+  },
+  {
+    "category": "disambiguation_qa",
+    "leaf_task": "bbh_cot_fewshot_disambiguation_qa",
+    "sample_index": 215,
+    "source_id": "bbh:disambiguation_qa:215"
+  },
+  {
+    "category": "disambiguation_qa",
+    "leaf_task": "bbh_cot_fewshot_disambiguation_qa",
+    "sample_index": 239,
+    "source_id": "bbh:disambiguation_qa:239"
+  },
+  {
+    "category": "dyck_languages",
+    "leaf_task": "bbh_cot_fewshot_dyck_languages",
+    "sample_index": 5,
+    "source_id": "bbh:dyck_languages:5"
+  },
+  {
+    "category": "dyck_languages",
+    "leaf_task": "bbh_cot_fewshot_dyck_languages",
+    "sample_index": 9,
+    "source_id": "bbh:dyck_languages:9"
+  },
+  {
+    "category": "dyck_languages",
+    "leaf_task": "bbh_cot_fewshot_dyck_languages",
+    "sample_index": 10,
+    "source_id": "bbh:dyck_languages:10"
+  },
+  {
+    "category": "dyck_languages",
+    "leaf_task": "bbh_cot_fewshot_dyck_languages",
+    "sample_index": 50,
+    "source_id": "bbh:dyck_languages:50"
+  },
+  {
+    "category": "dyck_languages",
+    "leaf_task": "bbh_cot_fewshot_dyck_languages",
+    "sample_index": 85,
+    "source_id": "bbh:dyck_languages:85"
+  },
+  {
+    "category": "dyck_languages",
+    "leaf_task": "bbh_cot_fewshot_dyck_languages",
+    "sample_index": 117,
+    "source_id": "bbh:dyck_languages:117"
+  },
+  {
+    "category": "dyck_languages",
+    "leaf_task": "bbh_cot_fewshot_dyck_languages",
+    "sample_index": 121,
+    "source_id": "bbh:dyck_languages:121"
+  },
+  {
+    "category": "dyck_languages",
+    "leaf_task": "bbh_cot_fewshot_dyck_languages",
+    "sample_index": 135,
+    "source_id": "bbh:dyck_languages:135"
+  },
+  {
+    "category": "dyck_languages",
+    "leaf_task": "bbh_cot_fewshot_dyck_languages",
+    "sample_index": 136,
+    "source_id": "bbh:dyck_languages:136"
+  },
+  {
+    "category": "dyck_languages",
+    "leaf_task": "bbh_cot_fewshot_dyck_languages",
+    "sample_index": 201,
+    "source_id": "bbh:dyck_languages:201"
+  },
+  {
+    "category": "formal_fallacies",
+    "leaf_task": "bbh_cot_fewshot_formal_fallacies",
+    "sample_index": 4,
+    "source_id": "bbh:formal_fallacies:4"
+  },
+  {
+    "category": "formal_fallacies",
+    "leaf_task": "bbh_cot_fewshot_formal_fallacies",
+    "sample_index": 48,
+    "source_id": "bbh:formal_fallacies:48"
+  },
+  {
+    "category": "formal_fallacies",
+    "leaf_task": "bbh_cot_fewshot_formal_fallacies",
+    "sample_index": 53,
+    "source_id": "bbh:formal_fallacies:53"
+  },
+  {
+    "category": "formal_fallacies",
+    "leaf_task": "bbh_cot_fewshot_formal_fallacies",
+    "sample_index": 76,
+    "source_id": "bbh:formal_fallacies:76"
+  },
+  {
+    "category": "formal_fallacies",
+    "leaf_task": "bbh_cot_fewshot_formal_fallacies",
+    "sample_index": 83,
+    "source_id": "bbh:formal_fallacies:83"
+  },
+  {
+    "category": "formal_fallacies",
+    "leaf_task": "bbh_cot_fewshot_formal_fallacies",
+    "sample_index": 149,
+    "source_id": "bbh:formal_fallacies:149"
+  },
+  {
+    "category": "formal_fallacies",
+    "leaf_task": "bbh_cot_fewshot_formal_fallacies",
+    "sample_index": 165,
+    "source_id": "bbh:formal_fallacies:165"
+  },
+  {
+    "category": "formal_fallacies",
+    "leaf_task": "bbh_cot_fewshot_formal_fallacies",
+    "sample_index": 176,
+    "source_id": "bbh:formal_fallacies:176"
+  },
+  {
+    "category": "formal_fallacies",
+    "leaf_task": "bbh_cot_fewshot_formal_fallacies",
+    "sample_index": 206,
+    "source_id": "bbh:formal_fallacies:206"
+  },
+  {
+    "category": "formal_fallacies",
+    "leaf_task": "bbh_cot_fewshot_formal_fallacies",
+    "sample_index": 245,
+    "source_id": "bbh:formal_fallacies:245"
+  },
+  {
+    "category": "geometric_shapes",
+    "leaf_task": "bbh_cot_fewshot_geometric_shapes",
+    "sample_index": 1,
+    "source_id": "bbh:geometric_shapes:1"
+  },
+  {
+    "category": "geometric_shapes",
+    "leaf_task": "bbh_cot_fewshot_geometric_shapes",
+    "sample_index": 4,
+    "source_id": "bbh:geometric_shapes:4"
+  },
+  {
+    "category": "geometric_shapes",
+    "leaf_task": "bbh_cot_fewshot_geometric_shapes",
+    "sample_index": 22,
+    "source_id": "bbh:geometric_shapes:22"
+  },
+  {
+    "category": "geometric_shapes",
+    "leaf_task": "bbh_cot_fewshot_geometric_shapes",
+    "sample_index": 83,
+    "source_id": "bbh:geometric_shapes:83"
+  },
+  {
+    "category": "geometric_shapes",
+    "leaf_task": "bbh_cot_fewshot_geometric_shapes",
+    "sample_index": 116,
+    "source_id": "bbh:geometric_shapes:116"
+  },
+  {
+    "category": "geometric_shapes",
+    "leaf_task": "bbh_cot_fewshot_geometric_shapes",
+    "sample_index": 150,
+    "source_id": "bbh:geometric_shapes:150"
+  },
+  {
+    "category": "geometric_shapes",
+    "leaf_task": "bbh_cot_fewshot_geometric_shapes",
+    "sample_index": 193,
+    "source_id": "bbh:geometric_shapes:193"
+  },
+  {
+    "category": "geometric_shapes",
+    "leaf_task": "bbh_cot_fewshot_geometric_shapes",
+    "sample_index": 211,
+    "source_id": "bbh:geometric_shapes:211"
+  },
+  {
+    "category": "geometric_shapes",
+    "leaf_task": "bbh_cot_fewshot_geometric_shapes",
+    "sample_index": 213,
+    "source_id": "bbh:geometric_shapes:213"
+  },
+  {
+    "category": "geometric_shapes",
+    "leaf_task": "bbh_cot_fewshot_geometric_shapes",
+    "sample_index": 218,
+    "source_id": "bbh:geometric_shapes:218"
+  },
+  {
+    "category": "hyperbaton",
+    "leaf_task": "bbh_cot_fewshot_hyperbaton",
+    "sample_index": 5,
+    "source_id": "bbh:hyperbaton:5"
+  },
+  {
+    "category": "hyperbaton",
+    "leaf_task": "bbh_cot_fewshot_hyperbaton",
+    "sample_index": 10,
+    "source_id": "bbh:hyperbaton:10"
+  },
+  {
+    "category": "hyperbaton",
+    "leaf_task": "bbh_cot_fewshot_hyperbaton",
+    "sample_index": 19,
+    "source_id": "bbh:hyperbaton:19"
+  },
+  {
+    "category": "hyperbaton",
+    "leaf_task": "bbh_cot_fewshot_hyperbaton",
+    "sample_index": 34,
+    "source_id": "bbh:hyperbaton:34"
+  },
+  {
+    "category": "hyperbaton",
+    "leaf_task": "bbh_cot_fewshot_hyperbaton",
+    "sample_index": 62,
+    "source_id": "bbh:hyperbaton:62"
+  },
+  {
+    "category": "hyperbaton",
+    "leaf_task": "bbh_cot_fewshot_hyperbaton",
+    "sample_index": 131,
+    "source_id": "bbh:hyperbaton:131"
+  },
+  {
+    "category": "hyperbaton",
+    "leaf_task": "bbh_cot_fewshot_hyperbaton",
+    "sample_index": 193,
+    "source_id": "bbh:hyperbaton:193"
+  },
+  {
+    "category": "hyperbaton",
+    "leaf_task": "bbh_cot_fewshot_hyperbaton",
+    "sample_index": 201,
+    "source_id": "bbh:hyperbaton:201"
+  },
+  {
+    "category": "hyperbaton",
+    "leaf_task": "bbh_cot_fewshot_hyperbaton",
+    "sample_index": 220,
+    "source_id": "bbh:hyperbaton:220"
+  },
+  {
+    "category": "hyperbaton",
+    "leaf_task": "bbh_cot_fewshot_hyperbaton",
+    "sample_index": 248,
+    "source_id": "bbh:hyperbaton:248"
+  },
+  {
+    "category": "logical_deduction_five_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_five_objects",
+    "sample_index": 23,
+    "source_id": "bbh:logical_deduction_five_objects:23"
+  },
+  {
+    "category": "logical_deduction_five_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_five_objects",
+    "sample_index": 61,
+    "source_id": "bbh:logical_deduction_five_objects:61"
+  },
+  {
+    "category": "logical_deduction_five_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_five_objects",
+    "sample_index": 78,
+    "source_id": "bbh:logical_deduction_five_objects:78"
+  },
+  {
+    "category": "logical_deduction_five_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_five_objects",
+    "sample_index": 114,
+    "source_id": "bbh:logical_deduction_five_objects:114"
+  },
+  {
+    "category": "logical_deduction_five_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_five_objects",
+    "sample_index": 118,
+    "source_id": "bbh:logical_deduction_five_objects:118"
+  },
+  {
+    "category": "logical_deduction_five_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_five_objects",
+    "sample_index": 182,
+    "source_id": "bbh:logical_deduction_five_objects:182"
+  },
+  {
+    "category": "logical_deduction_five_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_five_objects",
+    "sample_index": 196,
+    "source_id": "bbh:logical_deduction_five_objects:196"
+  },
+  {
+    "category": "logical_deduction_five_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_five_objects",
+    "sample_index": 220,
+    "source_id": "bbh:logical_deduction_five_objects:220"
+  },
+  {
+    "category": "logical_deduction_five_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_five_objects",
+    "sample_index": 245,
+    "source_id": "bbh:logical_deduction_five_objects:245"
+  },
+  {
+    "category": "logical_deduction_five_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_five_objects",
+    "sample_index": 247,
+    "source_id": "bbh:logical_deduction_five_objects:247"
+  },
+  {
+    "category": "logical_deduction_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_seven_objects",
+    "sample_index": 37,
+    "source_id": "bbh:logical_deduction_seven_objects:37"
+  },
+  {
+    "category": "logical_deduction_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_seven_objects",
+    "sample_index": 39,
+    "source_id": "bbh:logical_deduction_seven_objects:39"
+  },
+  {
+    "category": "logical_deduction_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_seven_objects",
+    "sample_index": 74,
+    "source_id": "bbh:logical_deduction_seven_objects:74"
+  },
+  {
+    "category": "logical_deduction_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_seven_objects",
+    "sample_index": 82,
+    "source_id": "bbh:logical_deduction_seven_objects:82"
+  },
+  {
+    "category": "logical_deduction_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_seven_objects",
+    "sample_index": 87,
+    "source_id": "bbh:logical_deduction_seven_objects:87"
+  },
+  {
+    "category": "logical_deduction_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_seven_objects",
+    "sample_index": 129,
+    "source_id": "bbh:logical_deduction_seven_objects:129"
+  },
+  {
+    "category": "logical_deduction_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_seven_objects",
+    "sample_index": 141,
+    "source_id": "bbh:logical_deduction_seven_objects:141"
+  },
+  {
+    "category": "logical_deduction_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_seven_objects",
+    "sample_index": 149,
+    "source_id": "bbh:logical_deduction_seven_objects:149"
+  },
+  {
+    "category": "logical_deduction_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_seven_objects",
+    "sample_index": 180,
+    "source_id": "bbh:logical_deduction_seven_objects:180"
+  },
+  {
+    "category": "logical_deduction_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_seven_objects",
+    "sample_index": 215,
+    "source_id": "bbh:logical_deduction_seven_objects:215"
+  },
+  {
+    "category": "logical_deduction_three_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_three_objects",
+    "sample_index": 8,
+    "source_id": "bbh:logical_deduction_three_objects:8"
+  },
+  {
+    "category": "logical_deduction_three_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_three_objects",
+    "sample_index": 32,
+    "source_id": "bbh:logical_deduction_three_objects:32"
+  },
+  {
+    "category": "logical_deduction_three_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_three_objects",
+    "sample_index": 52,
+    "source_id": "bbh:logical_deduction_three_objects:52"
+  },
+  {
+    "category": "logical_deduction_three_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_three_objects",
+    "sample_index": 121,
+    "source_id": "bbh:logical_deduction_three_objects:121"
+  },
+  {
+    "category": "logical_deduction_three_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_three_objects",
+    "sample_index": 133,
+    "source_id": "bbh:logical_deduction_three_objects:133"
+  },
+  {
+    "category": "logical_deduction_three_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_three_objects",
+    "sample_index": 150,
+    "source_id": "bbh:logical_deduction_three_objects:150"
+  },
+  {
+    "category": "logical_deduction_three_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_three_objects",
+    "sample_index": 182,
+    "source_id": "bbh:logical_deduction_three_objects:182"
+  },
+  {
+    "category": "logical_deduction_three_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_three_objects",
+    "sample_index": 204,
+    "source_id": "bbh:logical_deduction_three_objects:204"
+  },
+  {
+    "category": "logical_deduction_three_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_three_objects",
+    "sample_index": 210,
+    "source_id": "bbh:logical_deduction_three_objects:210"
+  },
+  {
+    "category": "logical_deduction_three_objects",
+    "leaf_task": "bbh_cot_fewshot_logical_deduction_three_objects",
+    "sample_index": 231,
+    "source_id": "bbh:logical_deduction_three_objects:231"
+  },
+  {
+    "category": "movie_recommendation",
+    "leaf_task": "bbh_cot_fewshot_movie_recommendation",
+    "sample_index": 46,
+    "source_id": "bbh:movie_recommendation:46"
+  },
+  {
+    "category": "movie_recommendation",
+    "leaf_task": "bbh_cot_fewshot_movie_recommendation",
+    "sample_index": 51,
+    "source_id": "bbh:movie_recommendation:51"
+  },
+  {
+    "category": "movie_recommendation",
+    "leaf_task": "bbh_cot_fewshot_movie_recommendation",
+    "sample_index": 57,
+    "source_id": "bbh:movie_recommendation:57"
+  },
+  {
+    "category": "movie_recommendation",
+    "leaf_task": "bbh_cot_fewshot_movie_recommendation",
+    "sample_index": 112,
+    "source_id": "bbh:movie_recommendation:112"
+  },
+  {
+    "category": "movie_recommendation",
+    "leaf_task": "bbh_cot_fewshot_movie_recommendation",
+    "sample_index": 160,
+    "source_id": "bbh:movie_recommendation:160"
+  },
+  {
+    "category": "movie_recommendation",
+    "leaf_task": "bbh_cot_fewshot_movie_recommendation",
+    "sample_index": 181,
+    "source_id": "bbh:movie_recommendation:181"
+  },
+  {
+    "category": "movie_recommendation",
+    "leaf_task": "bbh_cot_fewshot_movie_recommendation",
+    "sample_index": 187,
+    "source_id": "bbh:movie_recommendation:187"
+  },
+  {
+    "category": "movie_recommendation",
+    "leaf_task": "bbh_cot_fewshot_movie_recommendation",
+    "sample_index": 196,
+    "source_id": "bbh:movie_recommendation:196"
+  },
+  {
+    "category": "movie_recommendation",
+    "leaf_task": "bbh_cot_fewshot_movie_recommendation",
+    "sample_index": 211,
+    "source_id": "bbh:movie_recommendation:211"
+  },
+  {
+    "category": "movie_recommendation",
+    "leaf_task": "bbh_cot_fewshot_movie_recommendation",
+    "sample_index": 246,
+    "source_id": "bbh:movie_recommendation:246"
+  },
+  {
+    "category": "multistep_arithmetic_two",
+    "leaf_task": "bbh_cot_fewshot_multistep_arithmetic_two",
+    "sample_index": 10,
+    "source_id": "bbh:multistep_arithmetic_two:10"
+  },
+  {
+    "category": "multistep_arithmetic_two",
+    "leaf_task": "bbh_cot_fewshot_multistep_arithmetic_two",
+    "sample_index": 39,
+    "source_id": "bbh:multistep_arithmetic_two:39"
+  },
+  {
+    "category": "multistep_arithmetic_two",
+    "leaf_task": "bbh_cot_fewshot_multistep_arithmetic_two",
+    "sample_index": 46,
+    "source_id": "bbh:multistep_arithmetic_two:46"
+  },
+  {
+    "category": "multistep_arithmetic_two",
+    "leaf_task": "bbh_cot_fewshot_multistep_arithmetic_two",
+    "sample_index": 57,
+    "source_id": "bbh:multistep_arithmetic_two:57"
+  },
+  {
+    "category": "multistep_arithmetic_two",
+    "leaf_task": "bbh_cot_fewshot_multistep_arithmetic_two",
+    "sample_index": 78,
+    "source_id": "bbh:multistep_arithmetic_two:78"
+  },
+  {
+    "category": "multistep_arithmetic_two",
+    "leaf_task": "bbh_cot_fewshot_multistep_arithmetic_two",
+    "sample_index": 114,
+    "source_id": "bbh:multistep_arithmetic_two:114"
+  },
+  {
+    "category": "multistep_arithmetic_two",
+    "leaf_task": "bbh_cot_fewshot_multistep_arithmetic_two",
+    "sample_index": 124,
+    "source_id": "bbh:multistep_arithmetic_two:124"
+  },
+  {
+    "category": "multistep_arithmetic_two",
+    "leaf_task": "bbh_cot_fewshot_multistep_arithmetic_two",
+    "sample_index": 134,
+    "source_id": "bbh:multistep_arithmetic_two:134"
+  },
+  {
+    "category": "multistep_arithmetic_two",
+    "leaf_task": "bbh_cot_fewshot_multistep_arithmetic_two",
+    "sample_index": 149,
+    "source_id": "bbh:multistep_arithmetic_two:149"
+  },
+  {
+    "category": "multistep_arithmetic_two",
+    "leaf_task": "bbh_cot_fewshot_multistep_arithmetic_two",
+    "sample_index": 156,
+    "source_id": "bbh:multistep_arithmetic_two:156"
+  },
+  {
+    "category": "navigate",
+    "leaf_task": "bbh_cot_fewshot_navigate",
+    "sample_index": 34,
+    "source_id": "bbh:navigate:34"
+  },
+  {
+    "category": "navigate",
+    "leaf_task": "bbh_cot_fewshot_navigate",
+    "sample_index": 50,
+    "source_id": "bbh:navigate:50"
+  },
+  {
+    "category": "navigate",
+    "leaf_task": "bbh_cot_fewshot_navigate",
+    "sample_index": 69,
+    "source_id": "bbh:navigate:69"
+  },
+  {
+    "category": "navigate",
+    "leaf_task": "bbh_cot_fewshot_navigate",
+    "sample_index": 80,
+    "source_id": "bbh:navigate:80"
+  },
+  {
+    "category": "navigate",
+    "leaf_task": "bbh_cot_fewshot_navigate",
+    "sample_index": 82,
+    "source_id": "bbh:navigate:82"
+  },
+  {
+    "category": "navigate",
+    "leaf_task": "bbh_cot_fewshot_navigate",
+    "sample_index": 202,
+    "source_id": "bbh:navigate:202"
+  },
+  {
+    "category": "navigate",
+    "leaf_task": "bbh_cot_fewshot_navigate",
+    "sample_index": 219,
+    "source_id": "bbh:navigate:219"
+  },
+  {
+    "category": "navigate",
+    "leaf_task": "bbh_cot_fewshot_navigate",
+    "sample_index": 243,
+    "source_id": "bbh:navigate:243"
+  },
+  {
+    "category": "navigate",
+    "leaf_task": "bbh_cot_fewshot_navigate",
+    "sample_index": 247,
+    "source_id": "bbh:navigate:247"
+  },
+  {
+    "category": "object_counting",
+    "leaf_task": "bbh_cot_fewshot_object_counting",
+    "sample_index": 3,
+    "source_id": "bbh:object_counting:3"
+  },
+  {
+    "category": "object_counting",
+    "leaf_task": "bbh_cot_fewshot_object_counting",
+    "sample_index": 10,
+    "source_id": "bbh:object_counting:10"
+  },
+  {
+    "category": "object_counting",
+    "leaf_task": "bbh_cot_fewshot_object_counting",
+    "sample_index": 20,
+    "source_id": "bbh:object_counting:20"
+  },
+  {
+    "category": "object_counting",
+    "leaf_task": "bbh_cot_fewshot_object_counting",
+    "sample_index": 80,
+    "source_id": "bbh:object_counting:80"
+  },
+  {
+    "category": "object_counting",
+    "leaf_task": "bbh_cot_fewshot_object_counting",
+    "sample_index": 114,
+    "source_id": "bbh:object_counting:114"
+  },
+  {
+    "category": "object_counting",
+    "leaf_task": "bbh_cot_fewshot_object_counting",
+    "sample_index": 134,
+    "source_id": "bbh:object_counting:134"
+  },
+  {
+    "category": "object_counting",
+    "leaf_task": "bbh_cot_fewshot_object_counting",
+    "sample_index": 179,
+    "source_id": "bbh:object_counting:179"
+  },
+  {
+    "category": "object_counting",
+    "leaf_task": "bbh_cot_fewshot_object_counting",
+    "sample_index": 180,
+    "source_id": "bbh:object_counting:180"
+  },
+  {
+    "category": "object_counting",
+    "leaf_task": "bbh_cot_fewshot_object_counting",
+    "sample_index": 182,
+    "source_id": "bbh:object_counting:182"
+  },
+  {
+    "category": "penguins_in_a_table",
+    "leaf_task": "bbh_cot_fewshot_penguins_in_a_table",
+    "sample_index": 25,
+    "source_id": "bbh:penguins_in_a_table:25"
+  },
+  {
+    "category": "penguins_in_a_table",
+    "leaf_task": "bbh_cot_fewshot_penguins_in_a_table",
+    "sample_index": 27,
+    "source_id": "bbh:penguins_in_a_table:27"
+  },
+  {
+    "category": "penguins_in_a_table",
+    "leaf_task": "bbh_cot_fewshot_penguins_in_a_table",
+    "sample_index": 30,
+    "source_id": "bbh:penguins_in_a_table:30"
+  },
+  {
+    "category": "penguins_in_a_table",
+    "leaf_task": "bbh_cot_fewshot_penguins_in_a_table",
+    "sample_index": 48,
+    "source_id": "bbh:penguins_in_a_table:48"
+  },
+  {
+    "category": "penguins_in_a_table",
+    "leaf_task": "bbh_cot_fewshot_penguins_in_a_table",
+    "sample_index": 67,
+    "source_id": "bbh:penguins_in_a_table:67"
+  },
+  {
+    "category": "penguins_in_a_table",
+    "leaf_task": "bbh_cot_fewshot_penguins_in_a_table",
+    "sample_index": 74,
+    "source_id": "bbh:penguins_in_a_table:74"
+  },
+  {
+    "category": "penguins_in_a_table",
+    "leaf_task": "bbh_cot_fewshot_penguins_in_a_table",
+    "sample_index": 97,
+    "source_id": "bbh:penguins_in_a_table:97"
+  },
+  {
+    "category": "penguins_in_a_table",
+    "leaf_task": "bbh_cot_fewshot_penguins_in_a_table",
+    "sample_index": 105,
+    "source_id": "bbh:penguins_in_a_table:105"
+  },
+  {
+    "category": "penguins_in_a_table",
+    "leaf_task": "bbh_cot_fewshot_penguins_in_a_table",
+    "sample_index": 143,
+    "source_id": "bbh:penguins_in_a_table:143"
+  },
+  {
+    "category": "reasoning_about_colored_objects",
+    "leaf_task": "bbh_cot_fewshot_reasoning_about_colored_objects",
+    "sample_index": 17,
+    "source_id": "bbh:reasoning_about_colored_objects:17"
+  },
+  {
+    "category": "reasoning_about_colored_objects",
+    "leaf_task": "bbh_cot_fewshot_reasoning_about_colored_objects",
+    "sample_index": 51,
+    "source_id": "bbh:reasoning_about_colored_objects:51"
+  },
+  {
+    "category": "reasoning_about_colored_objects",
+    "leaf_task": "bbh_cot_fewshot_reasoning_about_colored_objects",
+    "sample_index": 139,
+    "source_id": "bbh:reasoning_about_colored_objects:139"
+  },
+  {
+    "category": "reasoning_about_colored_objects",
+    "leaf_task": "bbh_cot_fewshot_reasoning_about_colored_objects",
+    "sample_index": 170,
+    "source_id": "bbh:reasoning_about_colored_objects:170"
+  },
+  {
+    "category": "reasoning_about_colored_objects",
+    "leaf_task": "bbh_cot_fewshot_reasoning_about_colored_objects",
+    "sample_index": 181,
+    "source_id": "bbh:reasoning_about_colored_objects:181"
+  },
+  {
+    "category": "reasoning_about_colored_objects",
+    "leaf_task": "bbh_cot_fewshot_reasoning_about_colored_objects",
+    "sample_index": 189,
+    "source_id": "bbh:reasoning_about_colored_objects:189"
+  },
+  {
+    "category": "reasoning_about_colored_objects",
+    "leaf_task": "bbh_cot_fewshot_reasoning_about_colored_objects",
+    "sample_index": 191,
+    "source_id": "bbh:reasoning_about_colored_objects:191"
+  },
+  {
+    "category": "reasoning_about_colored_objects",
+    "leaf_task": "bbh_cot_fewshot_reasoning_about_colored_objects",
+    "sample_index": 193,
+    "source_id": "bbh:reasoning_about_colored_objects:193"
+  },
+  {
+    "category": "reasoning_about_colored_objects",
+    "leaf_task": "bbh_cot_fewshot_reasoning_about_colored_objects",
+    "sample_index": 225,
+    "source_id": "bbh:reasoning_about_colored_objects:225"
+  },
+  {
+    "category": "ruin_names",
+    "leaf_task": "bbh_cot_fewshot_ruin_names",
+    "sample_index": 18,
+    "source_id": "bbh:ruin_names:18"
+  },
+  {
+    "category": "ruin_names",
+    "leaf_task": "bbh_cot_fewshot_ruin_names",
+    "sample_index": 38,
+    "source_id": "bbh:ruin_names:38"
+  },
+  {
+    "category": "ruin_names",
+    "leaf_task": "bbh_cot_fewshot_ruin_names",
+    "sample_index": 72,
+    "source_id": "bbh:ruin_names:72"
+  },
+  {
+    "category": "ruin_names",
+    "leaf_task": "bbh_cot_fewshot_ruin_names",
+    "sample_index": 79,
+    "source_id": "bbh:ruin_names:79"
+  },
+  {
+    "category": "ruin_names",
+    "leaf_task": "bbh_cot_fewshot_ruin_names",
+    "sample_index": 81,
+    "source_id": "bbh:ruin_names:81"
+  },
+  {
+    "category": "ruin_names",
+    "leaf_task": "bbh_cot_fewshot_ruin_names",
+    "sample_index": 138,
+    "source_id": "bbh:ruin_names:138"
+  },
+  {
+    "category": "ruin_names",
+    "leaf_task": "bbh_cot_fewshot_ruin_names",
+    "sample_index": 164,
+    "source_id": "bbh:ruin_names:164"
+  },
+  {
+    "category": "ruin_names",
+    "leaf_task": "bbh_cot_fewshot_ruin_names",
+    "sample_index": 206,
+    "source_id": "bbh:ruin_names:206"
+  },
+  {
+    "category": "ruin_names",
+    "leaf_task": "bbh_cot_fewshot_ruin_names",
+    "sample_index": 221,
+    "source_id": "bbh:ruin_names:221"
+  },
+  {
+    "category": "salient_translation_error_detection",
+    "leaf_task": "bbh_cot_fewshot_salient_translation_error_detection",
+    "sample_index": 20,
+    "source_id": "bbh:salient_translation_error_detection:20"
+  },
+  {
+    "category": "salient_translation_error_detection",
+    "leaf_task": "bbh_cot_fewshot_salient_translation_error_detection",
+    "sample_index": 77,
+    "source_id": "bbh:salient_translation_error_detection:77"
+  },
+  {
+    "category": "salient_translation_error_detection",
+    "leaf_task": "bbh_cot_fewshot_salient_translation_error_detection",
+    "sample_index": 82,
+    "source_id": "bbh:salient_translation_error_detection:82"
+  },
+  {
+    "category": "salient_translation_error_detection",
+    "leaf_task": "bbh_cot_fewshot_salient_translation_error_detection",
+    "sample_index": 120,
+    "source_id": "bbh:salient_translation_error_detection:120"
+  },
+  {
+    "category": "salient_translation_error_detection",
+    "leaf_task": "bbh_cot_fewshot_salient_translation_error_detection",
+    "sample_index": 138,
+    "source_id": "bbh:salient_translation_error_detection:138"
+  },
+  {
+    "category": "salient_translation_error_detection",
+    "leaf_task": "bbh_cot_fewshot_salient_translation_error_detection",
+    "sample_index": 188,
+    "source_id": "bbh:salient_translation_error_detection:188"
+  },
+  {
+    "category": "salient_translation_error_detection",
+    "leaf_task": "bbh_cot_fewshot_salient_translation_error_detection",
+    "sample_index": 202,
+    "source_id": "bbh:salient_translation_error_detection:202"
+  },
+  {
+    "category": "salient_translation_error_detection",
+    "leaf_task": "bbh_cot_fewshot_salient_translation_error_detection",
+    "sample_index": 213,
+    "source_id": "bbh:salient_translation_error_detection:213"
+  },
+  {
+    "category": "salient_translation_error_detection",
+    "leaf_task": "bbh_cot_fewshot_salient_translation_error_detection",
+    "sample_index": 221,
+    "source_id": "bbh:salient_translation_error_detection:221"
+  },
+  {
+    "category": "snarks",
+    "leaf_task": "bbh_cot_fewshot_snarks",
+    "sample_index": 34,
+    "source_id": "bbh:snarks:34"
+  },
+  {
+    "category": "snarks",
+    "leaf_task": "bbh_cot_fewshot_snarks",
+    "sample_index": 46,
+    "source_id": "bbh:snarks:46"
+  },
+  {
+    "category": "snarks",
+    "leaf_task": "bbh_cot_fewshot_snarks",
+    "sample_index": 48,
+    "source_id": "bbh:snarks:48"
+  },
+  {
+    "category": "snarks",
+    "leaf_task": "bbh_cot_fewshot_snarks",
+    "sample_index": 55,
+    "source_id": "bbh:snarks:55"
+  },
+  {
+    "category": "snarks",
+    "leaf_task": "bbh_cot_fewshot_snarks",
+    "sample_index": 83,
+    "source_id": "bbh:snarks:83"
+  },
+  {
+    "category": "snarks",
+    "leaf_task": "bbh_cot_fewshot_snarks",
+    "sample_index": 96,
+    "source_id": "bbh:snarks:96"
+  },
+  {
+    "category": "snarks",
+    "leaf_task": "bbh_cot_fewshot_snarks",
+    "sample_index": 99,
+    "source_id": "bbh:snarks:99"
+  },
+  {
+    "category": "snarks",
+    "leaf_task": "bbh_cot_fewshot_snarks",
+    "sample_index": 130,
+    "source_id": "bbh:snarks:130"
+  },
+  {
+    "category": "snarks",
+    "leaf_task": "bbh_cot_fewshot_snarks",
+    "sample_index": 142,
+    "source_id": "bbh:snarks:142"
+  },
+  {
+    "category": "sports_understanding",
+    "leaf_task": "bbh_cot_fewshot_sports_understanding",
+    "sample_index": 41,
+    "source_id": "bbh:sports_understanding:41"
+  },
+  {
+    "category": "sports_understanding",
+    "leaf_task": "bbh_cot_fewshot_sports_understanding",
+    "sample_index": 57,
+    "source_id": "bbh:sports_understanding:57"
+  },
+  {
+    "category": "sports_understanding",
+    "leaf_task": "bbh_cot_fewshot_sports_understanding",
+    "sample_index": 65,
+    "source_id": "bbh:sports_understanding:65"
+  },
+  {
+    "category": "sports_understanding",
+    "leaf_task": "bbh_cot_fewshot_sports_understanding",
+    "sample_index": 68,
+    "source_id": "bbh:sports_understanding:68"
+  },
+  {
+    "category": "sports_understanding",
+    "leaf_task": "bbh_cot_fewshot_sports_understanding",
+    "sample_index": 71,
+    "source_id": "bbh:sports_understanding:71"
+  },
+  {
+    "category": "sports_understanding",
+    "leaf_task": "bbh_cot_fewshot_sports_understanding",
+    "sample_index": 79,
+    "source_id": "bbh:sports_understanding:79"
+  },
+  {
+    "category": "sports_understanding",
+    "leaf_task": "bbh_cot_fewshot_sports_understanding",
+    "sample_index": 147,
+    "source_id": "bbh:sports_understanding:147"
+  },
+  {
+    "category": "sports_understanding",
+    "leaf_task": "bbh_cot_fewshot_sports_understanding",
+    "sample_index": 177,
+    "source_id": "bbh:sports_understanding:177"
+  },
+  {
+    "category": "sports_understanding",
+    "leaf_task": "bbh_cot_fewshot_sports_understanding",
+    "sample_index": 244,
+    "source_id": "bbh:sports_understanding:244"
+  },
+  {
+    "category": "temporal_sequences",
+    "leaf_task": "bbh_cot_fewshot_temporal_sequences",
+    "sample_index": 24,
+    "source_id": "bbh:temporal_sequences:24"
+  },
+  {
+    "category": "temporal_sequences",
+    "leaf_task": "bbh_cot_fewshot_temporal_sequences",
+    "sample_index": 28,
+    "source_id": "bbh:temporal_sequences:28"
+  },
+  {
+    "category": "temporal_sequences",
+    "leaf_task": "bbh_cot_fewshot_temporal_sequences",
+    "sample_index": 31,
+    "source_id": "bbh:temporal_sequences:31"
+  },
+  {
+    "category": "temporal_sequences",
+    "leaf_task": "bbh_cot_fewshot_temporal_sequences",
+    "sample_index": 89,
+    "source_id": "bbh:temporal_sequences:89"
+  },
+  {
+    "category": "temporal_sequences",
+    "leaf_task": "bbh_cot_fewshot_temporal_sequences",
+    "sample_index": 91,
+    "source_id": "bbh:temporal_sequences:91"
+  },
+  {
+    "category": "temporal_sequences",
+    "leaf_task": "bbh_cot_fewshot_temporal_sequences",
+    "sample_index": 132,
+    "source_id": "bbh:temporal_sequences:132"
+  },
+  {
+    "category": "temporal_sequences",
+    "leaf_task": "bbh_cot_fewshot_temporal_sequences",
+    "sample_index": 137,
+    "source_id": "bbh:temporal_sequences:137"
+  },
+  {
+    "category": "temporal_sequences",
+    "leaf_task": "bbh_cot_fewshot_temporal_sequences",
+    "sample_index": 147,
+    "source_id": "bbh:temporal_sequences:147"
+  },
+  {
+    "category": "temporal_sequences",
+    "leaf_task": "bbh_cot_fewshot_temporal_sequences",
+    "sample_index": 207,
+    "source_id": "bbh:temporal_sequences:207"
+  },
+  {
+    "category": "tracking_shuffled_objects_five_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_five_objects",
+    "sample_index": 26,
+    "source_id": "bbh:tracking_shuffled_objects_five_objects:26"
+  },
+  {
+    "category": "tracking_shuffled_objects_five_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_five_objects",
+    "sample_index": 40,
+    "source_id": "bbh:tracking_shuffled_objects_five_objects:40"
+  },
+  {
+    "category": "tracking_shuffled_objects_five_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_five_objects",
+    "sample_index": 53,
+    "source_id": "bbh:tracking_shuffled_objects_five_objects:53"
+  },
+  {
+    "category": "tracking_shuffled_objects_five_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_five_objects",
+    "sample_index": 76,
+    "source_id": "bbh:tracking_shuffled_objects_five_objects:76"
+  },
+  {
+    "category": "tracking_shuffled_objects_five_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_five_objects",
+    "sample_index": 114,
+    "source_id": "bbh:tracking_shuffled_objects_five_objects:114"
+  },
+  {
+    "category": "tracking_shuffled_objects_five_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_five_objects",
+    "sample_index": 180,
+    "source_id": "bbh:tracking_shuffled_objects_five_objects:180"
+  },
+  {
+    "category": "tracking_shuffled_objects_five_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_five_objects",
+    "sample_index": 195,
+    "source_id": "bbh:tracking_shuffled_objects_five_objects:195"
+  },
+  {
+    "category": "tracking_shuffled_objects_five_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_five_objects",
+    "sample_index": 199,
+    "source_id": "bbh:tracking_shuffled_objects_five_objects:199"
+  },
+  {
+    "category": "tracking_shuffled_objects_five_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_five_objects",
+    "sample_index": 239,
+    "source_id": "bbh:tracking_shuffled_objects_five_objects:239"
+  },
+  {
+    "category": "tracking_shuffled_objects_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_seven_objects",
+    "sample_index": 11,
+    "source_id": "bbh:tracking_shuffled_objects_seven_objects:11"
+  },
+  {
+    "category": "tracking_shuffled_objects_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_seven_objects",
+    "sample_index": 45,
+    "source_id": "bbh:tracking_shuffled_objects_seven_objects:45"
+  },
+  {
+    "category": "tracking_shuffled_objects_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_seven_objects",
+    "sample_index": 53,
+    "source_id": "bbh:tracking_shuffled_objects_seven_objects:53"
+  },
+  {
+    "category": "tracking_shuffled_objects_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_seven_objects",
+    "sample_index": 97,
+    "source_id": "bbh:tracking_shuffled_objects_seven_objects:97"
+  },
+  {
+    "category": "tracking_shuffled_objects_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_seven_objects",
+    "sample_index": 103,
+    "source_id": "bbh:tracking_shuffled_objects_seven_objects:103"
+  },
+  {
+    "category": "tracking_shuffled_objects_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_seven_objects",
+    "sample_index": 202,
+    "source_id": "bbh:tracking_shuffled_objects_seven_objects:202"
+  },
+  {
+    "category": "tracking_shuffled_objects_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_seven_objects",
+    "sample_index": 210,
+    "source_id": "bbh:tracking_shuffled_objects_seven_objects:210"
+  },
+  {
+    "category": "tracking_shuffled_objects_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_seven_objects",
+    "sample_index": 214,
+    "source_id": "bbh:tracking_shuffled_objects_seven_objects:214"
+  },
+  {
+    "category": "tracking_shuffled_objects_seven_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_seven_objects",
+    "sample_index": 236,
+    "source_id": "bbh:tracking_shuffled_objects_seven_objects:236"
+  },
+  {
+    "category": "tracking_shuffled_objects_three_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_three_objects",
+    "sample_index": 26,
+    "source_id": "bbh:tracking_shuffled_objects_three_objects:26"
+  },
+  {
+    "category": "tracking_shuffled_objects_three_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_three_objects",
+    "sample_index": 44,
+    "source_id": "bbh:tracking_shuffled_objects_three_objects:44"
+  },
+  {
+    "category": "tracking_shuffled_objects_three_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_three_objects",
+    "sample_index": 53,
+    "source_id": "bbh:tracking_shuffled_objects_three_objects:53"
+  },
+  {
+    "category": "tracking_shuffled_objects_three_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_three_objects",
+    "sample_index": 56,
+    "source_id": "bbh:tracking_shuffled_objects_three_objects:56"
+  },
+  {
+    "category": "tracking_shuffled_objects_three_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_three_objects",
+    "sample_index": 83,
+    "source_id": "bbh:tracking_shuffled_objects_three_objects:83"
+  },
+  {
+    "category": "tracking_shuffled_objects_three_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_three_objects",
+    "sample_index": 87,
+    "source_id": "bbh:tracking_shuffled_objects_three_objects:87"
+  },
+  {
+    "category": "tracking_shuffled_objects_three_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_three_objects",
+    "sample_index": 116,
+    "source_id": "bbh:tracking_shuffled_objects_three_objects:116"
+  },
+  {
+    "category": "tracking_shuffled_objects_three_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_three_objects",
+    "sample_index": 158,
+    "source_id": "bbh:tracking_shuffled_objects_three_objects:158"
+  },
+  {
+    "category": "tracking_shuffled_objects_three_objects",
+    "leaf_task": "bbh_cot_fewshot_tracking_shuffled_objects_three_objects",
+    "sample_index": 239,
+    "source_id": "bbh:tracking_shuffled_objects_three_objects:239"
+  },
+  {
+    "category": "web_of_lies",
+    "leaf_task": "bbh_cot_fewshot_web_of_lies",
+    "sample_index": 40,
+    "source_id": "bbh:web_of_lies:40"
+  },
+  {
+    "category": "web_of_lies",
+    "leaf_task": "bbh_cot_fewshot_web_of_lies",
+    "sample_index": 54,
+    "source_id": "bbh:web_of_lies:54"
+  },
+  {
+    "category": "web_of_lies",
+    "leaf_task": "bbh_cot_fewshot_web_of_lies",
+    "sample_index": 75,
+    "source_id": "bbh:web_of_lies:75"
+  },
+  {
+    "category": "web_of_lies",
+    "leaf_task": "bbh_cot_fewshot_web_of_lies",
+    "sample_index": 166,
+    "source_id": "bbh:web_of_lies:166"
+  },
+  {
+    "category": "web_of_lies",
+    "leaf_task": "bbh_cot_fewshot_web_of_lies",
+    "sample_index": 171,
+    "source_id": "bbh:web_of_lies:171"
+  },
+  {
+    "category": "web_of_lies",
+    "leaf_task": "bbh_cot_fewshot_web_of_lies",
+    "sample_index": 187,
+    "source_id": "bbh:web_of_lies:187"
+  },
+  {
+    "category": "web_of_lies",
+    "leaf_task": "bbh_cot_fewshot_web_of_lies",
+    "sample_index": 199,
+    "source_id": "bbh:web_of_lies:199"
+  },
+  {
+    "category": "web_of_lies",
+    "leaf_task": "bbh_cot_fewshot_web_of_lies",
+    "sample_index": 204,
+    "source_id": "bbh:web_of_lies:204"
+  },
+  {
+    "category": "web_of_lies",
+    "leaf_task": "bbh_cot_fewshot_web_of_lies",
+    "sample_index": 243,
+    "source_id": "bbh:web_of_lies:243"
+  },
+  {
+    "category": "word_sorting",
+    "leaf_task": "bbh_cot_fewshot_word_sorting",
+    "sample_index": 23,
+    "source_id": "bbh:word_sorting:23"
+  },
+  {
+    "category": "word_sorting",
+    "leaf_task": "bbh_cot_fewshot_word_sorting",
+    "sample_index": 55,
+    "source_id": "bbh:word_sorting:55"
+  },
+  {
+    "category": "word_sorting",
+    "leaf_task": "bbh_cot_fewshot_word_sorting",
+    "sample_index": 101,
+    "source_id": "bbh:word_sorting:101"
+  },
+  {
+    "category": "word_sorting",
+    "leaf_task": "bbh_cot_fewshot_word_sorting",
+    "sample_index": 150,
+    "source_id": "bbh:word_sorting:150"
+  },
+  {
+    "category": "word_sorting",
+    "leaf_task": "bbh_cot_fewshot_word_sorting",
+    "sample_index": 180,
+    "source_id": "bbh:word_sorting:180"
+  },
+  {
+    "category": "word_sorting",
+    "leaf_task": "bbh_cot_fewshot_word_sorting",
+    "sample_index": 198,
+    "source_id": "bbh:word_sorting:198"
+  },
+  {
+    "category": "word_sorting",
+    "leaf_task": "bbh_cot_fewshot_word_sorting",
+    "sample_index": 219,
+    "source_id": "bbh:word_sorting:219"
+  },
+  {
+    "category": "word_sorting",
+    "leaf_task": "bbh_cot_fewshot_word_sorting",
+    "sample_index": 240,
+    "source_id": "bbh:word_sorting:240"
+  },
+  {
+    "category": "word_sorting",
+    "leaf_task": "bbh_cot_fewshot_word_sorting",
+    "sample_index": 244,
+    "source_id": "bbh:word_sorting:244"
+  }
+]
