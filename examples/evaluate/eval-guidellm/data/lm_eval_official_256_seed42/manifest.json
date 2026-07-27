@@ -3,7 +3,7 @@
     "bbh_cot_fewshot": {
       "category_counts": {
         "boolean_expressions": 10,
-        "causal_judgement": 10,
+        "causal_judgement": 7,
         "date_understanding": 10,
         "disambiguation_qa": 10,
         "dyck_languages": 10,
@@ -15,17 +15,17 @@
         "logical_deduction_three_objects": 10,
         "movie_recommendation": 10,
         "multistep_arithmetic_two": 10,
-        "navigate": 9,
-        "object_counting": 9,
-        "penguins_in_a_table": 9,
-        "reasoning_about_colored_objects": 9,
-        "ruin_names": 9,
-        "salient_translation_error_detection": 9,
-        "snarks": 9,
-        "sports_understanding": 9,
-        "temporal_sequences": 9,
-        "tracking_shuffled_objects_five_objects": 9,
-        "tracking_shuffled_objects_seven_objects": 9,
+        "navigate": 10,
+        "object_counting": 10,
+        "penguins_in_a_table": 5,
+        "reasoning_about_colored_objects": 10,
+        "ruin_names": 10,
+        "salient_translation_error_detection": 10,
+        "snarks": 7,
+        "sports_understanding": 10,
+        "temporal_sequences": 10,
+        "tracking_shuffled_objects_five_objects": 10,
+        "tracking_shuffled_objects_seven_objects": 10,
         "tracking_shuffled_objects_three_objects": 9,
         "web_of_lies": 9,
         "word_sorting": 9
@@ -33,9 +33,9 @@
       "leaf_tasks": 27,
       "rows": 256,
       "samples_path": "data/lm_eval_official_256_seed42/bbh_cot_fewshot_samples.json",
-      "samples_sha256": "171b8e9275e35af449814af75fbdc77e8827388b80d237ab1d7d7dbcbb9afe6f",
+      "samples_sha256": "d013cc2358aea7ff87f05e2be63ccbe978b3087cbbecc2bdce448c181f3ea67a",
       "selection_path": "data/lm_eval_official_256_seed42/bbh_cot_fewshot_selection.json",
-      "selection_sha256": "5ffcc8c4d9708bb324e58b0463c7e036d4f8d2ced0d82c6775010d550cb75e75"
+      "selection_sha256": "ad38a566a67655ecf93fe097aa0cd32efb742433ac91c3a1352ff13a10242276"
     },
     "gsm8k_cot": {
       "category_counts": {
@@ -50,48 +50,48 @@
     },
     "minerva_math": {
       "category_counts": {
-        "algebra": 37,
-        "counting_and_probability": 37,
-        "geometry": 37,
-        "intermediate_algebra": 37,
-        "number_theory": 36,
-        "prealgebra": 36,
-        "precalculus": 36
+        "algebra": 61,
+        "counting_and_probability": 24,
+        "geometry": 24,
+        "intermediate_algebra": 46,
+        "number_theory": 28,
+        "prealgebra": 45,
+        "precalculus": 28
       },
       "leaf_tasks": 7,
       "rows": 256,
       "samples_path": "data/lm_eval_official_256_seed42/minerva_math_samples.json",
-      "samples_sha256": "834aecde7651eb88bc26bba8f455dff9bdfc4dada982fde27baa261ffa2a661c",
+      "samples_sha256": "363f143e6595a725fff212047eee58c878f98a90ff18fd7df0c770159255e873",
       "selection_path": "data/lm_eval_official_256_seed42/minerva_math_selection.json",
-      "selection_sha256": "414ad55724f49727faf15a7304073421622c69e7b40afc7fbd8722fe58ba8fb2"
+      "selection_sha256": "2523c1199ad6edc4d8c4ebd123fc2f61ab2a3726537f9bd08dd22c5c23a6c66a"
     },
     "mmlu_pro": {
       "category_counts": {
-        "biology": 19,
-        "business": 19,
-        "chemistry": 19,
-        "computer science": 19,
+        "biology": 15,
+        "business": 17,
+        "chemistry": 24,
+        "computer science": 9,
         "economics": 18,
-        "engineering": 18,
-        "health": 18,
-        "history": 18,
-        "law": 18,
-        "math": 18,
-        "other": 18,
-        "philosophy": 18,
-        "physics": 18,
-        "psychology": 18
+        "engineering": 20,
+        "health": 17,
+        "history": 8,
+        "law": 23,
+        "math": 29,
+        "other": 20,
+        "philosophy": 11,
+        "physics": 28,
+        "psychology": 17
       },
       "leaf_tasks": 14,
       "rows": 256,
       "samples_path": "data/lm_eval_official_256_seed42/mmlu_pro_samples.json",
-      "samples_sha256": "c690ad2901f10aeefbdebaef25a1a10723eed7fc82e29c2345355501a855e34d",
+      "samples_sha256": "6f356ca63ac6814821bc7a922c1c3947c27d170f7d8b196d26566cf5a18c6341",
       "selection_path": "data/lm_eval_official_256_seed42/mmlu_pro_selection.json",
-      "selection_sha256": "a859d792e94fd8dcd9a0de267bf657a8af19690ff50ffdcd83e66ba963a8ce82"
+      "selection_sha256": "8f3e8f927dbff8058c16e0895d0f5906f5f8b90b038802d7b5f14068b43b3ede"
     }
   },
   "lm_eval_version": "0.4.12",
   "num_examples_per_benchmark": 256,
   "seed": 42,
-  "selection": "category-stratified random sample; exact leaf indices frozen"
+  "selection": "Hamilton population-proportional allocation with one continuous seeded RNG; exact leaf indices frozen"
 }
